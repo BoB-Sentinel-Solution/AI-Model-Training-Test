@@ -1,15 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-Qwen 3B/7B용 다중 데이터 학습 + LoRA 병합(단일 모델 저장) 스크립트
-- 입력 데이터 형식:
-  * JSONL: 한 줄에 하나의 샘플(dict: {"id","text","has_sensitive","entities":[...]} )
-  * JSON 배열: [ {...}, {...}, ... ]
-  * 여러 파일일 경우 --data 를 반복 지정하거나, JSON(배열)파일로도 가능
-- 출력:
-  * --out_dir: 학습 결과(LoRA 어댑터 포함)
-  * --merged_out: LoRA를 베이스에 병합한 "단일 모델" 디렉터리
+Qwen 3B/7B SFT (QLoRA) for Sensitive-Info Detection
+- Input dataset schema (JSON/JSONL):
+  {
+    "text": "<string>",
+    "has_sensitive": <bool>,
+    "entities": [
+      {"value": "<exact substring>", "begin": <int>, "end": <int>, "label": "<LABEL>"},
+      ...
+    ]
+  }
+- Supported LABEL set (dataset-aligned):
+  {USERNAME, PASSWORD, EMAIL, ADDRESS, NAME, BANK_ACCOUNT}
 
-사용 예:
+Features:
+* Multiple --data files (JSONL or JSON array) -> per-file train/val split -> temperature-mixed sampling per epoch
+* QLoRA SFT on Qwen 3B/7B
+* Merge LoRA into base → single model at --merged_out
+
+Usage examples:
   python train_and_merge_qwen_multi.py \
     --model Qwen/Qwen2.5-3B-Instruct \
     --data test_dataset.json \
@@ -17,7 +26,6 @@ Qwen 3B/7B용 다중 데이터 학습 + LoRA 병합(단일 모델 저장) 스크
     --merged_out runs/qwen3b_sft_merged \
     --epochs 3 --bf16
 
-  # 여러 파일
   python train_and_merge_qwen_multi.py \
     --model Qwen/Qwen2.5-7B-Instruct \
     --data ds1.jsonl --data ds2.json --data ds3.jsonl \
@@ -37,10 +45,14 @@ from peft import LoraConfig, PeftModel
 SEED = 42
 random.seed(SEED); np.random.seed(SEED)
 
+# =========================
+# Ultra-Strict System Prompt
+# (dataset-aligned label set)
+# =========================
 SYS_PROMPT = """You are "Sensitive-Info Detector", a precision assistant that outputs ONLY one JSON object per request.
 
 TASK
-- Given a single user sentence (Korean or English), analyze it and return:
+- Given exactly one user sentence (Korean or English), analyze it and return:
   {
     "has_sensitive": <boolean>,
     "entities": [
@@ -74,20 +86,18 @@ SUPPORTED LABELS (UPPERCASE, FIXED SET)
 - ADDRESS       : Postal address strings (e.g., "부산광역시 해운대구 센텀동로 25").
 - NAME          : Full personal names when explicitly present (e.g., "이지훈").
 - BANK_ACCOUNT  : Bank account numbers (e.g., 123-456-789012).
-- ORDER_NUMBER  : Order IDs (e.g., ORD-20250918-7788).
 
 DETECTION GUIDELINES
-- USERNAME: Alphanumerics + `_`/`.` allowed; label only the handle itself, not surrounding words.
-- PASSWORD: Label only if the literal password string is present; do NOT label “password” as a word unless the actual secret appears.
-- EMAIL: Match common local@domain patterns; include the entire email address.
-- ADDRESS: Label the full address substring, including numbers/floor markers if present.
-- NAME: Label the exact name substring (Korean/English). Do not include role words (e.g., "직원").
-- BANK_ACCOUNT: Label the numeric/hyphen account token only.
-- ORDER_NUMBER: Label the ID token only (keep any fixed prefix like ORD- if part of the ID).
+- USERNAME: Alphanumerics plus `_` or `.` allowed; label only the handle string, not surrounding words.
+- PASSWORD: Label only if the literal secret string is present; do NOT label the word “password” by itself.
+- EMAIL: Match common local@domain patterns; include the entire address.
+- ADDRESS: Label the full postal substring, including numbers/floor markers if present.
+- NAME: Label the exact personal name substring (Korean/English). Do not include role words (e.g., "직원").
+- BANK_ACCOUNT: Label the numeric/hyphenated account token only.
 
 BOUNDARY & QUOTING
 - Do not include trailing spaces or punctuation unless they are part of the entity.
-- For surrounding quotes or brackets, include them ONLY if they are part of the true entity token itself.
+- For surrounding quotes/brackets, include them ONLY if they are part of the true entity token.
 
 AMBIGUITY & NEGATION
 - Requests that talk ABOUT sensitive info without showing it (e.g., “Please send an email”) are NOT sensitive unless an actual entity substring appears.
@@ -142,7 +152,7 @@ VALIDATION CHECKS (BEFORE YOU OUTPUT)
 - The JSON parses.
 - Every entity.text equals input[begin:end].
 - begin and end are integers with 0 <= begin < end <= len(input).
-- Label ∈ {USERNAME, PASSWORD, EMAIL, ADDRESS, NAME, BANK_ACCOUNT, ORDER_NUMBER}.
+- Label ∈ {USERNAME, PASSWORD, EMAIL, ADDRESS, NAME, BANK_ACCOUNT}.
 - Entities sorted and deduplicated.
 
 FAIL-SAFE
@@ -150,63 +160,83 @@ FAIL-SAFE
 - If nothing valid remains, output has_sensitive=false and entities=[].
 """
 
-# ------------------ IO ------------------
+# ------------------ IO helpers ------------------
 def _read_json_or_jsonl(path: str) -> List[Dict[str, Any]]:
-    """JSONL 또는 JSON 배열 파일을 로드하여 리스트로 반환"""
+    """Load JSONL or JSON array → list[dict]. Also supports a JSON manifest: {"files": ["a.jsonl", ...]}"""
     with open(path, "r", encoding="utf-8") as f:
         s = f.read().strip()
     if not s:
         return []
-    # JSONL 추정
-    if "\n" in s and s[0] != "[":
+    # JSONL heuristic
+    if "\n" in s and not s.lstrip().startswith("["):
         rows = []
         for line in s.splitlines():
             line = line.strip()
             if line:
                 rows.append(json.loads(line))
         return rows
-    # JSON 배열
     obj = json.loads(s)
     if isinstance(obj, list):
         return obj
-    # JSON manifest(경로 리스트)도 지원
-    if isinstance(obj, dict) and "files" in obj and isinstance(obj["files"], list):
-        records = []
+    if isinstance(obj, dict) and isinstance(obj.get("files"), list):
+        out = []
         for p in obj["files"]:
-            records.extend(_read_json_or_jsonl(p))
-        return records
-    raise ValueError(f"알 수 없는 JSON 형식: {path}")
+            out.extend(_read_json_or_jsonl(p))
+        return out
+    raise ValueError(f"Unknown JSON format: {path}")
 
 def load_datasets(paths: List[str]) -> List[List[Dict[str, Any]]]:
-    """여러 파일을 개별 데이터셋(list of samples)으로 로드"""
-    datasets = []
-    for p in paths:
-        rows = _read_json_or_jsonl(p)
-        datasets.append(rows)
-    return datasets
+    return [_read_json_or_jsonl(p) for p in paths]
+
+# ------------------ normalization ------------------
+ALLOWED = {"USERNAME","PASSWORD","EMAIL","ADDRESS","NAME","BANK_ACCOUNT"}
+
+def _safe_entity(text: str, value: str, begin: int, end: int, label: str):
+    """Map dataset entity(value/begin/end/label) → model target entity(text/begin/end/label)."""
+    if label not in ALLOWED:
+        return None
+    if not isinstance(begin, int) or not isinstance(end, int):
+        return None
+    if not (0 <= begin < end <= len(text)):
+        return None
+    # Prefer dataset 'value', but force exact match with input range
+    span = text[begin:end]
+    if value is None or value == "":
+        value = span
+    # If mismatch, trust offsets and replace to keep schema invariant text == input[begin:end]
+    if span != value:
+        value = span
+    return {"label": label, "text": value, "begin": begin, "end": end}
 
 def normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
-    """엔티티 정규화/경계 보정"""
+    """Return training target object: text + has_sensitive(bool) + entities([{label,text,begin,end}])."""
     text = r.get("text", "")
-    ents = []
-    for e in r.get("entities", []) or []:
-        label = e.get("label") or e.get("type")
-        begin = int(e.get("begin", -1))
-        end = int(e.get("end", -1))
-        if 0 <= begin < end <= len(text):
-            ent_text = e.get("text") or e.get("value") or text[begin:end]
-            ents.append({"label": label, "text": ent_text, "begin": begin, "end": end})
-    return {"text": text, "has_sensitive": bool(r.get("has_sensitive", False)), "entities": ents}
+    ents_in = r.get("entities") or []
+    ents_out = []
+    for e in ents_in:
+        ent = _safe_entity(text, e.get("value"), int(e.get("begin", -1)), int(e.get("end", -1)), (e.get("label") or "").upper())
+        if ent:
+            ents_out.append(ent)
+    # sort & dedup
+    ents_out.sort(key=lambda x: (x["begin"], x["end"], x["label"]))
+    dedup = []
+    seen = set()
+    for e in ents_out:
+        key = (e["label"], e["begin"], e["end"])
+        if key not in seen:
+            dedup.append(e); seen.add(key)
+    has_sensitive = bool(dedup) if r.get("has_sensitive") is None else bool(r.get("has_sensitive"))
+    return {"text": text, "has_sensitive": has_sensitive, "entities": dedup}
 
 def to_target_json(r: Dict[str, Any]) -> str:
     obj = {"has_sensitive": bool(r.get("has_sensitive", False)), "entities": r.get("entities", [])}
     return json.dumps(obj, ensure_ascii=False)
 
-def to_chat_example(text: str, tgt_json: str) -> Dict[str, Any]:
+def to_chat_example(text: str, target_json: str) -> Dict[str, Any]:
     return {"messages": [
-        {"role":"system","content":SYS_PROMPT},
-        {"role":"user","content":text},
-        {"role":"assistant","content":tgt_json}
+        {"role":"system","content": SYS_PROMPT},
+        {"role":"user","content": text},
+        {"role":"assistant","content": target_json}
     ]}
 
 # ------------------ split & mixing ------------------
@@ -214,9 +244,9 @@ def split_train_val(rows: List[Dict[str, Any]], val_ratio: float=0.2) -> Tuple[L
     n = len(rows)
     idx = list(range(n)); random.shuffle(idx)
     k = max(1, int(n*val_ratio)) if n>1 else 1
-    val_idx = set(idx[:k]); tr, va = [], []
+    vset = set(idx[:k]); tr, va = [], []
     for i in range(n):
-        (va if i in val_idx else tr).append(rows[i])
+        (va if i in vset else tr).append(rows[i])
     return tr, va
 
 def temp_mix_weights(sizes: List[int], temperature: float) -> List[float]:
@@ -229,7 +259,6 @@ def pack_epoch(per_ds_train_msgs: List[List[Dict[str,Any]]], samples_per_epoch: 
     sizes = [len(x) for x in per_ds_train_msgs]
     weights = temp_mix_weights(sizes, temperature)
     counts = [int(round(samples_per_epoch*w)) for w in weights]
-    # 보정
     diff = samples_per_epoch - sum(counts)
     order = sorted(range(len(counts)), key=lambda i: weights[i], reverse=True)
     i=0
@@ -237,17 +266,14 @@ def pack_epoch(per_ds_train_msgs: List[List[Dict[str,Any]]], samples_per_epoch: 
         counts[order[i % len(order)]] += 1 if diff>0 else -1
         diff += -1 if diff>0 else 1
         i += 1
-    # 샘플링
     bucket = []
     for ds_rows, c in zip(per_ds_train_msgs, counts):
         if c<=0: continue
-        rows = ds_rows[:]
-        random.shuffle(rows)
+        rows = ds_rows[:]; random.shuffle(rows)
         if c <= len(rows):
             bucket.extend(rows[:c])
         else:
             bucket.extend(rows)
-            # 부족분은 중복허용
             for _ in range(c-len(rows)):
                 bucket.append(random.choice(ds_rows))
     random.shuffle(bucket)
@@ -256,10 +282,10 @@ def pack_epoch(per_ds_train_msgs: List[List[Dict[str,Any]]], samples_per_epoch: 
 # ------------------ main ------------------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, help="베이스 모델(예: Qwen/Qwen2.5-3B-Instruct, Qwen/Qwen2.5-7B-Instruct)")
-    ap.add_argument("--data", required=True, nargs="+", help="하나 이상의 데이터 파일(JSONL/JSON). JSON manifest도 지원")
-    ap.add_argument("--out_dir", required=True, help="학습 산출물(LoRA 어댑터 포함) 저장 폴더")
-    ap.add_argument("--merged_out", required=True, help="병합(단일 모델) 저장 폴더")
+    ap.add_argument("--model", required=True, help="Base model (e.g., Qwen/Qwen2.5-3B-Instruct)")
+    ap.add_argument("--data", required=True, nargs="+", help="One or more dataset files (JSONL/JSON). Manifest JSON {'files':[...]} supported.")
+    ap.add_argument("--out_dir", required=True, help="Directory to save SFT (LoRA adapter)")
+    ap.add_argument("--merged_out", required=True, help="Directory to save merged single model")
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--batch", type=int, default=4)
@@ -270,7 +296,6 @@ def main():
     ap.add_argument("--temperature", type=float, default=1.3)
     ap.add_argument("--bf16", action="store_true")
     ap.add_argument("--fp16", action="store_true")
-    # LoRA 하이퍼파라미터 옵션
     ap.add_argument("--lora_r", type=int, default=16)
     ap.add_argument("--lora_alpha", type=int, default=32)
     ap.add_argument("--lora_dropout", type=float, default=0.05)
@@ -279,22 +304,20 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     os.makedirs(args.merged_out, exist_ok=True)
 
-    # ----- 데이터 로드 -----
-    # 각 파일을 "하나의 데이터셋"으로 취급 (파일 하나만 주면 단일 데이터셋)
-    raw_datasets = load_datasets(args.data)
-    # 정규화 + 중복 텍스트 제거 + split
+    # Load & normalize per dataset
+    raw_sets = load_datasets(args.data)
     per_ds_train_msgs, all_val_msgs = [], []
     total_train = 0
-    for rows in raw_datasets:
+    for rows in raw_sets:
         rows = [normalize_row(r) for r in rows if r.get("text")]
-        # 내부 중복 제거
+        # per-dataset de-dup by text
         seen=set(); uniq=[]
         for r in rows:
             t=r["text"]
             if t not in seen:
                 uniq.append(r); seen.add(t)
         rows = uniq
-        if not rows: 
+        if not rows:
             continue
         tr, va = split_train_val(rows, args.val_ratio)
         tr_msgs = [to_chat_example(r["text"], to_target_json(r)) for r in tr]
@@ -304,15 +327,13 @@ def main():
         total_train += len(tr_msgs)
 
     if not per_ds_train_msgs:
-        raise RuntimeError("학습할 샘플이 없습니다. --data 파일을 확인하세요.")
+        raise RuntimeError("No training samples. Check --data files.")
     if not all_val_msgs:
-        # 최소 1개 보장
         all_val_msgs = per_ds_train_msgs[0][:1]
 
-    print(f"[INFO] 데이터셋 수: {len(per_ds_train_msgs)}, train 합계: {total_train}, val 합계: {len(all_val_msgs)}")
+    print(f"[INFO] datasets: {len(per_ds_train_msgs)}, train total: {total_train}, val total: {len(all_val_msgs)}")
 
-    # ----- 토크나이저/모델/LoRA(QLoRA) -----
-    use_bnb = True
+    # Tokenizer/Model with QLoRA
     bnb_cfg = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype="bfloat16" if args.bf16 else "float16",
@@ -323,10 +344,7 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        device_map="auto",
-        torch_dtype="auto",
-        quantization_config=bnb_cfg
+        args.model, device_map="auto", torch_dtype="auto", quantization_config=bnb_cfg
     )
     peft_cfg = LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
@@ -334,13 +352,12 @@ def main():
         target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]
     )
 
-    # assistant 응답만 학습
     resp_tmpl = tok.apply_chat_template([{"role":"assistant","content":""}], tokenize=False, add_generation_prompt=False)
     collator = DataCollatorForCompletionOnlyLM(response_template=resp_tmpl, tokenizer=tok)
 
     sft_cfg = SFTConfig(
         output_dir=args.out_dir,
-        num_train_epochs=1,  # 아래에서 epoch-by-epoch 루프 수행
+        num_train_epochs=1,                     # loop epochs manually
         per_device_train_batch_size=args.batch,
         per_device_eval_batch_size=max(1, args.batch//2),
         gradient_accumulation_steps=args.grad_accum,
@@ -362,10 +379,10 @@ def main():
         push_to_hub=False
     )
 
-    def formatting_func(example):  # TRL이 chat_template 적용
+    def formatting_func(example):  # TRL will apply chat template
         return example["messages"]
 
-    # 최초 에폭 버킷
+    # initial epoch bucket
     epoch_bucket = pack_epoch(per_ds_train_msgs, args.samples_per_epoch, args.temperature)
     ds_train = Dataset.from_list(epoch_bucket)
     ds_val = Dataset.from_list(all_val_msgs)
@@ -391,18 +408,49 @@ def main():
         trainer.train(resume_from_checkpoint=False)
         metrics = trainer.evaluate()
         print(f"[EVAL] Epoch {ep+1} metrics: {metrics}")
-        # 중간 체크포인트(선택): trainer.save_model(os.path.join(args.out_dir, f"ep{ep+1}"))
 
-    # ------ LoRA 병합 → 단일 모델 저장 ------
-    print("\n[MERGE] LoRA를 베이스에 병합합니다...")
+    # Merge LoRA → single model
+    print("\n[MERGE] Merging LoRA into base...")
     base = AutoModelForCausalLM.from_pretrained(args.model, device_map="auto", torch_dtype="auto")
     merged = PeftModel.from_pretrained(base, args.out_dir).merge_and_unload()
     merged.save_pretrained(args.merged_out)
     tok.save_pretrained(args.merged_out)
 
-    print(f"\n[완료] 어댑터 저장: {args.out_dir}")
-    print(f"[완료] 병합 단일 모델 저장: {args.merged_out}")
-    print("→ 배포 시 merged_out 경로를 바로 from_pretrained로 로드")
+    # quick inference helper
+    infer_py = f'''# -*- coding: utf-8 -*-
+import json, torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+MODEL_DIR = r"{os.path.abspath(args.merged_out)}"   # merged single model
+
+tok = AutoTokenizer.from_pretrained(MODEL_DIR)
+model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, device_map="auto", torch_dtype="auto")
+if tok.pad_token is None: tok.pad_token = tok.eos_token
+
+SYS = {json.dumps(SYS_PROMPT, ensure_ascii=False)}
+
+def ask(text: str, max_new_tokens=256):
+    msgs = [{{"role":"system","content":SYS}}, {{"role":"user","content":text}}]
+    x = tok.apply_chat_template(msgs, return_tensors="pt", add_generation_prompt=True).to(model.device)
+    with torch.no_grad():
+        y = model.generate(x, max_new_tokens=max_new_tokens, do_sample=False, eos_token_id=tok.eos_token_id)
+    return tok.decode(y[0], skip_special_tokens=True)
+
+if __name__ == "__main__":
+    while True:
+        try:
+            q = input("text> ").strip()
+            if not q: continue
+            print(ask(q))
+        except (EOFError, KeyboardInterrupt):
+            break
+'''
+    with open(os.path.join(args.merged_out, "infer.py"), "w", encoding="utf-8") as f:
+        f.write(infer_py)
+
+    print(f"\n[Done] Adapter saved at: {args.out_dir}")
+    print(f"[Done] Merged single model at: {args.merged_out}")
+    print(f"Try: python {os.path.join(args.merged_out, 'infer.py')}")
 
 if __name__ == "__main__":
     main()
