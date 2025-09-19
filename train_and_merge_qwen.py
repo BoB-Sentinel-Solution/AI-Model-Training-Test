@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset as TorchDataset
 
-from datasets import Dataset
+from datasets import Dataset  # (미사용이어도 무해)
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments
 from trl import SFTTrainer
 try:
@@ -362,14 +362,16 @@ def main():
     ds_train = ChatMaskedDataset(tok, epoch_bucket, max_len=args.max_len)
     ds_val   = ChatMaskedDataset(tok, all_val_msgs, max_len=args.max_len)
 
+    # ---- SFTTrainer (구/신버전 공통으로 안전하게 최소 인자만) ----
     trainer = SFTTrainer(
-        model=model, tokenizer=tok,
-        train_dataset=ds_train, eval_dataset=ds_val,
+        model=model,
+        train_dataset=ds_train,
+        eval_dataset=ds_val,
         peft_config=peft_cfg,
         args=sft_cfg,
-        max_seq_length=args.max_len,   # ← 여기로 전달 (SFTConfig에 넣지 않음)
-        dataset_text_field=None,
-        packing=False
+        # NOTE:
+        # - tokenizer=tok, max_seq_length, dataset_text_field, packing 제거
+        #   (커스텀 마스킹이 길이/라벨을 모두 처리)
     )
 
     total_epochs = args.epochs
