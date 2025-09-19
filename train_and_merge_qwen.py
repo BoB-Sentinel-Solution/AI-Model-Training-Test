@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Qwen 3B/7B — QLoRA/LoRA SFT with CUSTOM MASKING & TRL compatibility
+Qwen 3B/7B — QLoRA/LoRA SFT with CUSTOM MASKING using transformers.Trainer (TRL 없이도 동작)
 - Dataset schema (JSON/JSONL):
   {
     "text": "<string>",
@@ -17,20 +17,16 @@ from typing import List, Dict, Any, Tuple
 import numpy as np
 import torch
 from torch.utils.data import Dataset as TorchDataset
+from torch.nn.utils.rnn import pad_sequence
 
-from datasets import Dataset  # (미사용이어도 무해)
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments
-from trl import SFTTrainer
-try:
-    from trl import SFTConfig
-    HAS_SFTCONFIG = True
-except Exception:
-    HAS_SFTCONFIG = False
-
-from peft import LoraConfig, PeftModel
+from transformers import (
+    AutoTokenizer, AutoModelForCausalLM,
+    BitsAndBytesConfig, TrainingArguments, Trainer
+)
+from peft import LoraConfig, get_peft_model, PeftModel
 
 SEED = 42
-random.seed(SEED); np.random.seed(SEED)
+random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
 
 # ========================= System Prompt (엄격) =========================
 SYS_PROMPT = """You are "Sensitive-Info Detector", a precision assistant that outputs ONLY one JSON object per request.
@@ -241,6 +237,19 @@ class ChatMaskedDataset(TorchDataset):
         msgs = self.rows[i]["messages"]
         return build_sample(self.tok, msgs, self.max_len)
 
+# --- collate: pad batch tensors (input_ids, attention_mask, labels) ---
+def pad_collate_fn(batch, pad_id: int, label_pad_id: int = -100):
+    input_ids = [b["input_ids"] for b in batch]
+    attn      = [b["attention_mask"] for b in batch]
+    labels    = [b["labels"] for b in batch]
+    maxlen = max(x.size(0) for x in input_ids)
+    def _pad(seq, value):
+        return torch.cat([seq, torch.full((maxlen - seq.size(0),), value, dtype=seq.dtype)], dim=0)
+    input_ids = torch.stack([_pad(x, pad_id) for x in input_ids], dim=0)
+    attn      = torch.stack([_pad(x, 0) for x in attn], dim=0)
+    labels    = torch.stack([_pad(x, label_pad_id) for x in labels], dim=0)
+    return {"input_ids": input_ids, "attention_mask": attn, "labels": labels}
+
 # ========================= main =========================
 def main():
     ap = argparse.ArgumentParser()
@@ -313,24 +322,28 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         device_map="auto",
-        dtype="auto",               # torch_dtype deprecated 경고 회피
+        dtype="auto",
         quantization_config=quant_cfg
     )
 
+    # Apply LoRA (PEFT) directly
     peft_cfg = LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
         bias="none", task_type="CAUSAL_LM",
         target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]
     )
+    model = get_peft_model(model, peft_cfg)
 
-    # ----- TRL 호환 설정 -----
-    common_kwargs = dict(
+    # Trainer args
+    train_args = TrainingArguments(
         output_dir=args.out_dir,
         per_device_train_batch_size=args.batch,
         per_device_eval_batch_size=max(1, args.batch//2),
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
+        num_train_epochs=1,          # 에폭은 아래 수동 루프
         logging_steps=20,
+        evaluation_strategy="steps",
         eval_steps=100,
         save_steps=100,
         save_total_limit=2,
@@ -338,40 +351,24 @@ def main():
         bf16=args.bf16,
         fp16=(args.fp16 and not args.bf16),
         lr_scheduler_type="cosine",
-        warmup_ratio=0.03
+        warmup_ratio=0.03,
+        remove_unused_columns=False,  # 커스텀 텐서 컬럼 유지
+        optim="paged_adamw_8bit" if (quant_cfg is not None) else "adamw_torch"
     )
 
-    if HAS_SFTCONFIG:
-        sft_cfg = SFTConfig(
-            **common_kwargs,
-            eval_strategy="steps",
-            push_to_hub=False,
-            remove_unused_columns=False,
-            packing=False
-        )
-    else:
-        sft_cfg = TrainingArguments(
-            **common_kwargs,
-            evaluation_strategy="steps",
-            num_train_epochs=1,
-            push_to_hub=False
-        )
-
-    # initial epoch → masked datasets
+    # epoch 1개 분량 버킷 → Dataset 생성
     epoch_bucket = pack_epoch(per_ds_train_msgs, args.samples_per_epoch, args.temperature)
     ds_train = ChatMaskedDataset(tok, epoch_bucket, max_len=args.max_len)
     ds_val   = ChatMaskedDataset(tok, all_val_msgs, max_len=args.max_len)
 
-    # ---- SFTTrainer (구/신버전 공통으로 안전하게 최소 인자만) ----
-    trainer = SFTTrainer(
+    collate = lambda batch: pad_collate_fn(batch, pad_id=tok.pad_token_id, label_pad_id=-100)
+
+    trainer = Trainer(
         model=model,
+        args=train_args,
         train_dataset=ds_train,
         eval_dataset=ds_val,
-        peft_config=peft_cfg,
-        args=sft_cfg,
-        # NOTE:
-        # - tokenizer=tok, max_seq_length, dataset_text_field, packing 제거
-        #   (커스텀 마스킹이 길이/라벨을 모두 처리)
+        data_collator=collate
     )
 
     total_epochs = args.epochs
@@ -380,7 +377,7 @@ def main():
             epoch_bucket = pack_epoch(per_ds_train_msgs, args.samples_per_epoch, args.temperature)
             trainer.train_dataset = ChatMaskedDataset(tok, epoch_bucket, max_len=args.max_len)
         print(f"\n[TRAIN] Epoch {ep+1}/{total_epochs} - samples: {len(trainer.train_dataset)}")
-        trainer.train(resume_from_checkpoint=False)
+        trainer.train()
         metrics = trainer.evaluate()
         print(f"[EVAL] Epoch {ep+1} metrics: {metrics}")
 
