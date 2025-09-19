@@ -4,6 +4,13 @@ ai 모델에 제작한 데이터셋 학습
 ## Requirement
 ```
 pip install "transformers>=4.44" "trl>=0.9.6" peft bitsandbytes datasets accelerate
+
+#GPU CUDA12.
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 
+
+pip install transformers trl peft accelerate datasets bitsandbytes safetensors huggingface_hub tokenizers numpy jsonschema
+
+pip install seqeval wandb einops
 ```
 
 ## How to run
