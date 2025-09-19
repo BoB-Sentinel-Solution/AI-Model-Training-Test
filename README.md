@@ -14,23 +14,27 @@ pip install seqeval wandb einops
 ```
 
 ## How to run
-단일 데이터셋
 ```
-python train_and_merge_qwen_multi.py \
+# QLoRA(4bit)
+python train_and_merge_qwen_custom_mask.py \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --data test_dataset.json \
+  --out_dir runs/qwen7b_sft \
+  --merged_out runs/qwen7b_sft_merged \
+  --epochs 3 --bf16 \
+  --samples_per_epoch 2000 --temperature 1.3 \
+  --batch 1 --grad_accum 16 --max_len 1024
+```
+
+```
+# LoRA
+python train_and_merge_qwen_custom_mask.py \
   --model Qwen/Qwen2.5-3B-Instruct \
   --data test_dataset.json \
   --out_dir runs/qwen3b_sft \
   --merged_out runs/qwen3b_sft_merged \
-  --epochs 3 --bf16 --samples_per_epoch 2000 --temperature 1.3
+  --epochs 3 --bf16 --no_qlora \
+  --batch 4 --grad_accum 8 --max_len 1024
 ```
 
-여러 데이터셋
-```
-python train_and_merge_qwen_multi.py \
-  --model Qwen/Qwen2.5-7B-Instruct \
-  --data ds1.jsonl --data ds2.json --data ds3.jsonl --data ds4.json \
-  --out_dir runs/qwen7b_multi \
-  --merged_out runs/qwen7b_multi_merged \
-  --epochs 3 --bf16 --samples_per_epoch 8000 --temperature 1.3 \
-  --batch 2 --grad_accum 16 --max_len 1024
-```
+<img width="1905" height="307" alt="image" src="https://github.com/user-attachments/assets/0acaf195-3610-4aec-a614-687f8ad15cf2" />
