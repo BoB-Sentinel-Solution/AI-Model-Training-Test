@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Qwen 3B/7B — QLoRA/LoRA SFT with CUSTOM MASKING using transformers.Trainer (TRL 없이도 동작)
-- Dataset schema (JSON/JSONL):
+Qwen 3B/7B — QLoRA/LoRA SFT with CUSTOM MASKING using transformers.Trainer (TRL 불필요)
+- Dataset (JSON/JSONL) rows:
   {
     "text": "<string>",
     "has_sensitive": <bool>,
@@ -17,7 +17,6 @@ from typing import List, Dict, Any, Tuple
 import numpy as np
 import torch
 from torch.utils.data import Dataset as TorchDataset
-from torch.nn.utils.rnn import pad_sequence
 
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM,
@@ -237,18 +236,64 @@ class ChatMaskedDataset(TorchDataset):
         msgs = self.rows[i]["messages"]
         return build_sample(self.tok, msgs, self.max_len)
 
-# --- collate: pad batch tensors (input_ids, attention_mask, labels) ---
 def pad_collate_fn(batch, pad_id: int, label_pad_id: int = -100):
     input_ids = [b["input_ids"] for b in batch]
     attn      = [b["attention_mask"] for b in batch]
     labels    = [b["labels"] for b in batch]
     maxlen = max(x.size(0) for x in input_ids)
     def _pad(seq, value):
-        return torch.cat([seq, torch.full((maxlen - seq.size(0),), value, dtype=seq.dtype)], dim=0)
+        if seq.size(0) < maxlen:
+            pad = torch.full((maxlen - seq.size(0),), value, dtype=seq.dtype)
+            return torch.cat([seq, pad], dim=0)
+        return seq
     input_ids = torch.stack([_pad(x, pad_id) for x in input_ids], dim=0)
     attn      = torch.stack([_pad(x, 0) for x in attn], dim=0)
     labels    = torch.stack([_pad(x, label_pad_id) for x in labels], dim=0)
     return {"input_ids": input_ids, "attention_mask": attn, "labels": labels}
+
+# ========================= TrainingArguments 호환 생성 =========================
+def make_training_args(args):
+    # 최신/근접 버전 시도
+    try:
+        return TrainingArguments(
+            output_dir=args.out_dir,
+            per_device_train_batch_size=args.batch,
+            per_device_eval_batch_size=max(1, args.batch//2),
+            gradient_accumulation_steps=args.grad_accum,
+            learning_rate=args.lr,
+            num_train_epochs=1,  # 에폭은 아래 수동 루프
+            logging_steps=20,
+            evaluation_strategy="steps",
+            eval_steps=100,
+            save_steps=100,
+            save_total_limit=2,
+            gradient_checkpointing=True,
+            bf16=args.bf16,
+            fp16=(args.fp16 and not args.bf16),
+            lr_scheduler_type="cosine",
+            warmup_ratio=0.03,
+            remove_unused_columns=False,
+            optim=("paged_adamw_8bit" if not args.no_qlora else "adamw_torch"),
+        )
+    except TypeError:
+        # 구버전 폴백: 없는 인자들을 제거/대체
+        kwargs = dict(
+            output_dir=args.out_dir,
+            per_device_train_batch_size=args.batch,
+            per_device_eval_batch_size=max(1, args.batch//2),
+            gradient_accumulation_steps=args.grad_accum,
+            learning_rate=args.lr,
+            num_train_epochs=1,
+            logging_steps=20,
+            save_steps=100,
+            save_total_limit=2,
+            remove_unused_columns=False,
+        )
+        # fp16/bf16 호환 처리
+        if args.bf16 or args.fp16:
+            kwargs["fp16"] = True
+        # 구버전에선 평가 전략 인자가 없을 수 있음(우리는 아래에서 수동 evaluate 호출)
+        return TrainingArguments(**kwargs)
 
 # ========================= main =========================
 def main():
@@ -326,7 +371,7 @@ def main():
         quantization_config=quant_cfg
     )
 
-    # Apply LoRA (PEFT) directly
+    # Apply LoRA (PEFT)
     peft_cfg = LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
         bias="none", task_type="CAUSAL_LM",
@@ -334,29 +379,10 @@ def main():
     )
     model = get_peft_model(model, peft_cfg)
 
-    # Trainer args
-    train_args = TrainingArguments(
-        output_dir=args.out_dir,
-        per_device_train_batch_size=args.batch,
-        per_device_eval_batch_size=max(1, args.batch//2),
-        gradient_accumulation_steps=args.grad_accum,
-        learning_rate=args.lr,
-        num_train_epochs=1,          # 에폭은 아래 수동 루프
-        logging_steps=20,
-        evaluation_strategy="steps",
-        eval_steps=100,
-        save_steps=100,
-        save_total_limit=2,
-        gradient_checkpointing=True,
-        bf16=args.bf16,
-        fp16=(args.fp16 and not args.bf16),
-        lr_scheduler_type="cosine",
-        warmup_ratio=0.03,
-        remove_unused_columns=False,  # 커스텀 텐서 컬럼 유지
-        optim="paged_adamw_8bit" if (quant_cfg is not None) else "adamw_torch"
-    )
+    # Trainer args (버전 호환)
+    train_args = make_training_args(args)
 
-    # epoch 1개 분량 버킷 → Dataset 생성
+    # epoch 1개 분량 버킷 → Dataset
     epoch_bucket = pack_epoch(per_ds_train_msgs, args.samples_per_epoch, args.temperature)
     ds_train = ChatMaskedDataset(tok, epoch_bucket, max_len=args.max_len)
     ds_val   = ChatMaskedDataset(tok, all_val_msgs, max_len=args.max_len)
@@ -378,8 +404,14 @@ def main():
             trainer.train_dataset = ChatMaskedDataset(tok, epoch_bucket, max_len=args.max_len)
         print(f"\n[TRAIN] Epoch {ep+1}/{total_epochs} - samples: {len(trainer.train_dataset)}")
         trainer.train()
-        metrics = trainer.evaluate()
-        print(f"[EVAL] Epoch {ep+1} metrics: {metrics}")
+        try:
+            metrics = trainer.evaluate()
+            print(f"[EVAL] Epoch {ep+1} metrics: {metrics}")
+        except Exception as e:
+            print(f"[WARN] evaluate skipped: {e}")
+
+    # LoRA 어댑터 저장(선택) - 체크포인트 외에 명시 저장
+    model.save_pretrained(args.out_dir)
 
     # Merge LoRA → single model
     print("\n[MERGE] Merging LoRA into base...")
@@ -405,15 +437,15 @@ def ask(text: str, max_new_tokens=256):
     msgs = [{{"role":"system","content":SYS}}, {{"role":"user","content":text}}]
     x = tok.apply_chat_template(msgs, return_tensors="pt", add_generation_prompt=True).to(model.device)
     with torch.no_grad():
-        y = model.generate(x, max_new_tokens=max_new_tokens, do_sample=False, eos_token_id=tok.eos_token_id)
-    return tok.decode(y[0], skip_special_tokens=True)
+        y = model.generate(x, max_new_tokens=256, do_sample=False, eos_token_id=tok.eos_token_id)
+    print(tok.decode(y[0], skip_special_tokens=True))
 
 if __name__ == "__main__":
     while True:
         try:
             q = input("text> ").strip()
             if not q: continue
-            print(ask(q))
+            ask(q)
         except (EOFError, KeyboardInterrupt):
             break
 '''
