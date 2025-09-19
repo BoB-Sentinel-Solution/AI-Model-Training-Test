@@ -1,53 +1,39 @@
 # -*- coding: utf-8 -*-
 """
-Qwen 3B/7B SFT (QLoRA) for Sensitive-Info Detection
-- Input dataset schema (JSON/JSONL):
+Qwen 3B/7B — QLoRA SFT with CUSTOM MASKING (no TRL collator)
+- Dataset schema (JSON/JSONL):
   {
     "text": "<string>",
-    "has_sensitive": <bool>,
-    "entities": [
-      {"value": "<exact substring>", "begin": <int>, "end": <int>, "label": "<LABEL>"},
+    "has_sensitive": <bool>,                 # not used for loss; kept for consistency
+    "entities": [                            # not used for loss; SFT is generative target below
+      {"value": "<substring>", "begin": <int>, "end": <int>, "label": "<LABEL>"},
       ...
     ]
   }
-- Supported LABEL set (dataset-aligned):
-  {USERNAME, PASSWORD, EMAIL, ADDRESS, NAME, BANK_ACCOUNT}
 
-Features:
-* Multiple --data files (JSONL or JSON array) -> per-file train/val split -> temperature-mixed sampling per epoch
-* QLoRA SFT on Qwen 3B/7B
-* Merge LoRA into base → single model at --merged_out
-
-Usage examples:
-  python train_and_merge_qwen_multi.py \
-    --model Qwen/Qwen2.5-3B-Instruct \
-    --data test_dataset.json \
-    --out_dir runs/qwen3b_sft \
-    --merged_out runs/qwen3b_sft_merged \
-    --epochs 3 --bf16
-
-  python train_and_merge_qwen_multi.py \
-    --model Qwen/Qwen2.5-7B-Instruct \
-    --data ds1.jsonl --data ds2.json --data ds3.jsonl \
-    --out_dir runs/qwen7b_multi \
-    --merged_out runs/qwen7b_multi_merged \
-    --epochs 3 --bf16 --samples_per_epoch 8000 --temperature 1.3
+What this script does
+1) Build chat examples: [system, user(text), assistant(target_JSON)]
+2) Apply custom masking → labels are set ONLY on assistant segment (system/user = -100)
+3) Train with QLoRA (4bit) or normal LoRA (use --no_qlora)
+4) Merge LoRA into base and save a single final model (--merged_out)
 """
+
 import os, json, argparse, random
 from typing import List, Dict, Any, Tuple
 import numpy as np
+import torch
+from torch.utils.data import Dataset as TorchDataset
 
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
+from trl import SFTTrainer, SFTConfig
 from peft import LoraConfig, PeftModel
 
 SEED = 42
 random.seed(SEED); np.random.seed(SEED)
 
 # =========================
-# Ultra-Strict System Prompt
-# (dataset-aligned label set)
+# Ultra-Strict System Prompt (same as earlier; model learns to output strict JSON)
 # =========================
 SYS_PROMPT = """You are "Sensitive-Info Detector", a precision assistant that outputs ONLY one JSON object per request.
 
@@ -56,113 +42,88 @@ TASK
   {
     "has_sensitive": <boolean>,
     "entities": [
-      {"label": "<LABEL>", "text": "<exact substring>", "begin": <int>, "end": <int>},
-      ...
+      {"label": "<LABEL>", "text": "<exact substring>", "begin": <int>, "end": <int>}
     ]
   }
 
 OUTPUT RULES (STRICT)
-1) Output exactly one JSON object. No code fences, no extra text, no explanations.
-2) JSON keys MUST appear in this order:
-   - has_sensitive
-   - entities
+1) Output exactly one JSON object. No code fences, no extra text, no explanations. Trim leading/trailing whitespace.
+2) JSON keys MUST appear in this order: has_sensitive, entities.
 3) Each entity object MUST have keys in this order: label, text, begin, end.
-4) Use UTF-8 JSON escaping when required. Do not alter input text’s characters.
+4) Use UTF-8 JSON escaping when required. Do not alter or normalize input text; keep Unicode exactly as given.
 5) Offsets are 0-based character indices in the ORIGINAL input string; end is exclusive.
-6) Sort entities by (begin ASC, end ASC, then label ASC).
-7) If two entities have identical (label, begin, end), keep only one.
-8) If an entity’s substring doesn’t exactly match the input (e.g., spacing differs), adjust begin/end so that text == input[begin:end].
-9) If nothing is extractable, entities = [] and has_sensitive = false.
-10) NEVER invent content. Do not infer hidden values from context. Only label substrings that appear verbatim in the input.
+6) Sort entities by (begin ASC, end ASC, then label ASC). If duplicates (same label, begin, end) exist, keep only one.
+7) If an entity’s substring doesn’t exactly match the input, adjust begin/end so that text == input[begin:end].
+8) If nothing is extractable, entities = [] and has_sensitive = false.
+9) NEVER invent content. Do not infer hidden values; only label substrings that appear verbatim in the input.
+10) Optional cap: if entities would exceed 50 items, keep the earliest 50 by sort order.
 
 SENSITIVITY POLICY
-- Set has_sensitive = true if AND ONLY IF at least one labeled entity is extracted.
-- Otherwise, has_sensitive = false.
+- Set has_sensitive = true iff at least one labeled entity is extracted; otherwise false.
 
 SUPPORTED LABELS (UPPERCASE, FIXED SET)
 - USERNAME      : Account or login handle (e.g., hong_gildong, user_han99).
-- PASSWORD      : Any password-like token exactly written in text (e.g., Abc1234!).
-- EMAIL         : RFC-5322-like email patterns (e.g., yujin.kim@company.example).
+- PASSWORD      : Literal password string (e.g., Abc1234!).
+- EMAIL         : Email address (e.g., yujin.kim@company.example).
 - ADDRESS       : Postal address strings (e.g., "부산광역시 해운대구 센텀동로 25").
-- NAME          : Full personal names when explicitly present (e.g., "이지훈").
+- NAME          : Personal names explicitly present (e.g., "이지훈").
 - BANK_ACCOUNT  : Bank account numbers (e.g., 123-456-789012).
 
 DETECTION GUIDELINES
-- USERNAME: Alphanumerics plus `_` or `.` allowed; label only the handle string, not surrounding words.
-- PASSWORD: Label only if the literal secret string is present; do NOT label the word “password” by itself.
-- EMAIL: Match common local@domain patterns; include the entire address.
-- ADDRESS: Label the full postal substring, including numbers/floor markers if present.
-- NAME: Label the exact personal name substring (Korean/English). Do not include role words (e.g., "직원").
-- BANK_ACCOUNT: Label the numeric/hyphenated account token only.
+- USERNAME: Alphanumerics with `_` or `.`; label only the handle, not surrounding words.
+- PASSWORD: Label only if the literal secret appears; do NOT label the word “password” alone.
+- EMAIL: Include the entire local@domain.
+- ADDRESS: Include full address substring, with numbers/floor markers if present.
+- NAME: Label the exact name substring; do not include role words (e.g., "직원").
+- BANK_ACCOUNT: Label only the numeric/hyphenated token.
 
 BOUNDARY & QUOTING
-- Do not include trailing spaces or punctuation unless they are part of the entity.
-- For surrounding quotes/brackets, include them ONLY if they are part of the true entity token.
+- Do not include trailing spaces/punctuation unless part of the entity.
+- Include quotes/brackets only if they are part of the true token.
 
 AMBIGUITY & NEGATION
-- Requests that talk ABOUT sensitive info without showing it (e.g., “Please send an email”) are NOT sensitive unless an actual entity substring appears.
+- Talking ABOUT sensitive info without showing a concrete value is NOT sensitive.
 
 ROBUSTNESS
-- Preserve original casing and Unicode exactly in "text".
-- If the same sensitive value appears multiple times, output each occurrence with correct offsets.
-- If the input contains masked placeholders (e.g., ****), do NOT label them.
+- Preserve original casing and Unicode in "text".
+- If the same value appears multiple times, output each occurrence with correct offsets.
+- Ignore masked placeholders (e.g., ****).
 
 SCHEMA EXAMPLES
+(1) "로그인 계정명: hong_gildong, 패스워드: Abc1234! 입력 시 실패 원인을 분석해줘."
+→ {"has_sensitive": true, "entities": [
+     {"label":"USERNAME","text":"hong_gildong","begin":9,"end":21},
+     {"label":"PASSWORD","text":"Abc1234!","begin":33,"end":41}
+   ]}
 
-(1) Contains username and password
-Input: "로그인 계정명: hong_gildong, 패스워드: Abc1234! 입력 시 실패 원인을 분석해줘."
-Output:
-{
-  "has_sensitive": true,
-  "entities": [
-    {"label": "USERNAME", "text": "hong_gildong", "begin": 9, "end": 21},
-    {"label": "PASSWORD", "text": "Abc1234!", "begin": 33, "end": 41}
-  ]
-}
+(2) "본사 주소는 부산광역시 해운대구 센텀동로 25입니다."
+→ {"has_sensitive": true, "entities": [
+     {"label":"ADDRESS","text":"부산광역시 해운대구 센텀동로 25","begin":6,"end":27}
+   ]}
 
-(2) Address
-Input: "본사 주소는 부산광역시 해운대구 센텀동로 25입니다."
-Output:
-{
-  "has_sensitive": true,
-  "entities": [
-    {"label": "ADDRESS", "text": "부산광역시 해운대구 센텀동로 25", "begin": 6, "end": 27}
-  ]
-}
+(3) "담당자 이메일은 yujin.kim@company.example인데 이메일 보내줘"
+→ {"has_sensitive": true, "entities": [
+     {"label":"EMAIL","text":"yujin.kim@company.example","begin":10,"end":38}
+   ]}
 
-(3) Email
-Input: "담당자 이메일은 yujin.kim@company.example인데 이메일 보내줘"
-Output:
-{
-  "has_sensitive": true,
-  "entities": [
-    {"label": "EMAIL", "text": "yujin.kim@company.example", "begin": 10, "end": 38}
-  ]
-}
-
-(4) Non-sensitive
-Input: "IT 부서에서 사용할 신규 장비 리스트를 표로 정리해줘."
-Output:
-{
-  "has_sensitive": false,
-  "entities": []
-}
+(4) "IT 부서에서 사용할 신규 장비 리스트를 표로 정리해줘."
+→ {"has_sensitive": false, "entities": []}
 
 VALIDATION CHECKS (BEFORE YOU OUTPUT)
-- The JSON parses.
-- Every entity.text equals input[begin:end].
-- begin and end are integers with 0 <= begin < end <= len(input).
-- Label ∈ {USERNAME, PASSWORD, EMAIL, ADDRESS, NAME, BANK_ACCOUNT}.
+- JSON must parse.
+- For every entity: text == input[begin:end]; 0 <= begin < end <= len(input); label ∈ {USERNAME, PASSWORD, EMAIL, ADDRESS, NAME, BANK_ACCOUNT}.
 - Entities sorted and deduplicated.
 
 FAIL-SAFE
-- If any rule would be violated by adding an entity, drop that entity instead of guessing.
-- If nothing valid remains, output has_sensitive=false and entities=[].
+- If any rule would be violated, drop that entity.
+- If no valid entity remains or parsing would fail, output: {"has_sensitive": false, "entities": []}.
 """
 
-# ------------------ IO helpers ------------------
+
+ALLOWED = {"USERNAME","PASSWORD","EMAIL","ADDRESS","NAME","BANK_ACCOUNT"}
+
+# ---------- IO ----------
 def _read_json_or_jsonl(path: str) -> List[Dict[str, Any]]:
-    """Load JSONL or JSON array → list[dict]. Also supports a JSON manifest: {"files": ["a.jsonl", ...]}"""
     with open(path, "r", encoding="utf-8") as f:
         s = f.read().strip()
     if not s:
@@ -188,28 +149,21 @@ def _read_json_or_jsonl(path: str) -> List[Dict[str, Any]]:
 def load_datasets(paths: List[str]) -> List[List[Dict[str, Any]]]:
     return [_read_json_or_jsonl(p) for p in paths]
 
-# ------------------ normalization ------------------
-ALLOWED = {"USERNAME","PASSWORD","EMAIL","ADDRESS","NAME","BANK_ACCOUNT"}
-
+# ---------- normalize to target JSON (what the assistant should output) ----------
 def _safe_entity(text: str, value: str, begin: int, end: int, label: str):
-    """Map dataset entity(value/begin/end/label) → model target entity(text/begin/end/label)."""
     if label not in ALLOWED:
         return None
-    if not isinstance(begin, int) or not isinstance(end, int):
+    if not isinstance(begin, int) or not isinstance(end, int) or not (0 <= begin < end <= len(text)):
         return None
-    if not (0 <= begin < end <= len(text)):
-        return None
-    # Prefer dataset 'value', but force exact match with input range
     span = text[begin:end]
-    if value is None or value == "":
+    if not value:
         value = span
-    # If mismatch, trust offsets and replace to keep schema invariant text == input[begin:end]
-    if span != value:
+    # keep offsets authoritative; ensure text matches input[begin:end]
+    if value != span:
         value = span
     return {"label": label, "text": value, "begin": begin, "end": end}
 
 def normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
-    """Return training target object: text + has_sensitive(bool) + entities([{label,text,begin,end}])."""
     text = r.get("text", "")
     ents_in = r.get("entities") or []
     ents_out = []
@@ -217,14 +171,13 @@ def normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
         ent = _safe_entity(text, e.get("value"), int(e.get("begin", -1)), int(e.get("end", -1)), (e.get("label") or "").upper())
         if ent:
             ents_out.append(ent)
-    # sort & dedup
     ents_out.sort(key=lambda x: (x["begin"], x["end"], x["label"]))
-    dedup = []
-    seen = set()
+    # dedup by (label,begin,end)
+    dedup, seen = [], set()
     for e in ents_out:
-        key = (e["label"], e["begin"], e["end"])
-        if key not in seen:
-            dedup.append(e); seen.add(key)
+        k = (e["label"], e["begin"], e["end"])
+        if k not in seen:
+            dedup.append(e); seen.add(k)
     has_sensitive = bool(dedup) if r.get("has_sensitive") is None else bool(r.get("has_sensitive"))
     return {"text": text, "has_sensitive": has_sensitive, "entities": dedup}
 
@@ -232,14 +185,14 @@ def to_target_json(r: Dict[str, Any]) -> str:
     obj = {"has_sensitive": bool(r.get("has_sensitive", False)), "entities": r.get("entities", [])}
     return json.dumps(obj, ensure_ascii=False)
 
-def to_chat_example(text: str, target_json: str) -> Dict[str, Any]:
+def to_chat_example(text: str, tgt_json: str) -> Dict[str, Any]:
     return {"messages": [
-        {"role":"system","content": SYS_PROMPT},
-        {"role":"user","content": text},
-        {"role":"assistant","content": target_json}
+        {"role": "system", "content": SYS_PROMPT},
+        {"role": "user", "content": text},
+        {"role": "assistant", "content": tgt_json}
     ]}
 
-# ------------------ split & mixing ------------------
+# ---------- split & mixing ----------
 def split_train_val(rows: List[Dict[str, Any]], val_ratio: float=0.2) -> Tuple[List, List]:
     n = len(rows)
     idx = list(range(n)); random.shuffle(idx)
@@ -279,13 +232,75 @@ def pack_epoch(per_ds_train_msgs: List[List[Dict[str,Any]]], samples_per_epoch: 
     random.shuffle(bucket)
     return bucket
 
-# ------------------ main ------------------
+# ---------- CUSTOM MASKING ----------
+def build_sample(tok, messages, max_len=1024):
+    """
+    Convert chat messages -> (input_ids, attention_mask, labels) with labels on ASSISTANT span only.
+    """
+    # 1) Serialize full conversation
+    full_text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+
+    # 2) Assistant-only serialization (same template) to locate the span
+    assistant_text = tok.apply_chat_template(
+        [{"role":"assistant","content":messages[-1]["content"]}],
+        tokenize=False, add_generation_prompt=False
+    )
+    start_char = full_text.rfind(assistant_text)
+    if start_char == -1:
+        # fallback: place span at the end
+        start_char = len(full_text) - len(assistant_text)
+
+    # 3) Tokenize all
+    enc_full = tok(full_text, return_tensors="pt", truncation=False)
+    input_ids = enc_full["input_ids"][0]
+    attn = enc_full["attention_mask"][0]
+
+    # find token start index by tokenizing prefix up to start_char
+    prefix = full_text[:start_char]
+    enc_prefix = tok(prefix, return_tensors="pt", truncation=False)
+    start_tok = enc_prefix["input_ids"].shape[1]
+
+    enc_asst = tok(assistant_text, return_tensors="pt", truncation=False)
+    asst_len = enc_asst["input_ids"].shape[1]
+    end_tok = start_tok + asst_len
+
+    # 4) Truncate to max_len (simple head truncation if too long)
+    if input_ids.shape[0] > max_len:
+        cut = input_ids.shape[0] - max_len
+        input_ids = input_ids[cut:]
+        attn = attn[cut:]
+        # shift span accordingly
+        start_tok = max(0, start_tok - cut)
+        end_tok = max(0, end_tok - cut)
+        end_tok = min(end_tok, input_ids.shape[0])
+
+    # 5) Labels mask
+    labels = torch.full_like(input_ids, fill_value=-100)
+    start_tok = max(0, min(start_tok, input_ids.shape[0]))
+    end_tok   = max(0, min(end_tok,   input_ids.shape[0]))
+    if end_tok > start_tok:
+        labels[start_tok:end_tok] = input_ids[start_tok:end_tok]
+
+    return {"input_ids": input_ids, "attention_mask": attn, "labels": labels}
+
+class ChatMaskedDataset(TorchDataset):
+    def __init__(self, tok, list_of_messages: List[Dict[str,Any]], max_len=1024):
+        self.tok = tok
+        self.rows = list_of_messages
+        self.max_len = max_len
+    def __len__(self):
+        return len(self.rows)
+    def __getitem__(self, i):
+        msgs = self.rows[i]["messages"]
+        return build_sample(self.tok, msgs, self.max_len)
+
+# ---------- main ----------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, help="Base model (e.g., Qwen/Qwen2.5-3B-Instruct)")
-    ap.add_argument("--data", required=True, nargs="+", help="One or more dataset files (JSONL/JSON). Manifest JSON {'files':[...]} supported.")
-    ap.add_argument("--out_dir", required=True, help="Directory to save SFT (LoRA adapter)")
-    ap.add_argument("--merged_out", required=True, help="Directory to save merged single model")
+    ap.add_argument("--model", required=True, help="Base model, e.g., Qwen/Qwen2.5-3B-Instruct")
+    ap.add_argument("--data", required=True, nargs="+", help="One or more dataset files (JSONL/JSON).")
+    ap.add_argument("--out_dir", required=True, help="Where to save LoRA adapter")
+    ap.add_argument("--merged_out", required=True, help="Where to save merged single model")
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--batch", type=int, default=4)
@@ -296,6 +311,7 @@ def main():
     ap.add_argument("--temperature", type=float, default=1.3)
     ap.add_argument("--bf16", action="store_true")
     ap.add_argument("--fp16", action="store_true")
+    ap.add_argument("--no_qlora", action="store_true", help="Disable 4-bit quant; use normal LoRA")
     ap.add_argument("--lora_r", type=int, default=16)
     ap.add_argument("--lora_alpha", type=int, default=32)
     ap.add_argument("--lora_dropout", type=float, default=0.05)
@@ -304,13 +320,13 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     os.makedirs(args.merged_out, exist_ok=True)
 
-    # Load & normalize per dataset
+    # Load & normalize
     raw_sets = load_datasets(args.data)
     per_ds_train_msgs, all_val_msgs = [], []
     total_train = 0
     for rows in raw_sets:
         rows = [normalize_row(r) for r in rows if r.get("text")]
-        # per-dataset de-dup by text
+        # de-dup by text within each dataset
         seen=set(); uniq=[]
         for r in rows:
             t=r["text"]
@@ -333,31 +349,37 @@ def main():
 
     print(f"[INFO] datasets: {len(per_ds_train_msgs)}, train total: {total_train}, val total: {len(all_val_msgs)}")
 
-    # Tokenizer/Model with QLoRA
-    bnb_cfg = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype="bfloat16" if args.bf16 else "float16",
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True
-    )
+    # Tokenizer & Model
     tok = AutoTokenizer.from_pretrained(args.model, use_fast=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+
+    quant_cfg = None
+    if not args.no_qlora:
+        quant_cfg = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype="bfloat16" if args.bf16 else "float16",
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True
+        )
+
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, device_map="auto", torch_dtype="auto", quantization_config=bnb_cfg
+        args.model,
+        device_map="auto",
+        torch_dtype="auto",
+        quantization_config=quant_cfg
     )
+
     peft_cfg = LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
         bias="none", task_type="CAUSAL_LM",
         target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]
     )
 
-    resp_tmpl = tok.apply_chat_template([{"role":"assistant","content":""}], tokenize=False, add_generation_prompt=False)
-    collator = DataCollatorForCompletionOnlyLM(response_template=resp_tmpl, tokenizer=tok)
-
+    # SFT config (no formatting_func / no collator; we feed tensors directly)
     sft_cfg = SFTConfig(
         output_dir=args.out_dir,
-        num_train_epochs=1,                     # loop epochs manually
+        num_train_epochs=1,  # we loop epochs manually
         per_device_train_batch_size=args.batch,
         per_device_eval_batch_size=max(1, args.batch//2),
         gradient_accumulation_steps=args.grad_accum,
@@ -367,43 +389,37 @@ def main():
         eval_steps=100,
         save_steps=100,
         save_total_limit=2,
-        optim="paged_adamw_8bit",
+        optim="paged_adamw_8bit" if (quant_cfg is not None) else "adamw_torch",
         gradient_checkpointing=True,
         bf16=args.bf16,
         fp16=(args.fp16 and not args.bf16),
         max_seq_length=args.max_len,
-        packing=True,
+        packing=False,  # custom dataset already handles truncation
         dataset_num_proc=4,
         lr_scheduler_type="cosine",
         warmup_ratio=0.03,
-        push_to_hub=False
+        push_to_hub=False,
+        remove_unused_columns=False  # IMPORTANT: we pass ready-made tensors
     )
 
-    def formatting_func(example):  # TRL will apply chat template
-        return example["messages"]
-
-    # initial epoch bucket
+    # initial epoch bucket → masked datasets
     epoch_bucket = pack_epoch(per_ds_train_msgs, args.samples_per_epoch, args.temperature)
-    ds_train = Dataset.from_list(epoch_bucket)
-    ds_val = Dataset.from_list(all_val_msgs)
+    ds_train = ChatMaskedDataset(tok, epoch_bucket, max_len=args.max_len)
+    ds_val   = ChatMaskedDataset(tok, all_val_msgs, max_len=args.max_len)
 
     trainer = SFTTrainer(
         model=model, tokenizer=tok,
         train_dataset=ds_train, eval_dataset=ds_val,
         peft_config=peft_cfg,
-        packing=sft_cfg.packing,
-        dataset_text_field=None,
-        max_seq_length=sft_cfg.max_seq_length,
         args=sft_cfg,
-        formatting_func=formatting_func,
-        data_collator=collator
+        # no formatting_func, no data_collator
     )
 
     total_epochs = args.epochs
     for ep in range(total_epochs):
         if ep > 0:
             epoch_bucket = pack_epoch(per_ds_train_msgs, args.samples_per_epoch, args.temperature)
-            trainer.train_dataset = Dataset.from_list(epoch_bucket)
+            trainer.train_dataset = ChatMaskedDataset(tok, epoch_bucket, max_len=args.max_len)
         print(f"\n[TRAIN] Epoch {ep+1}/{total_epochs} - samples: {len(trainer.train_dataset)}")
         trainer.train(resume_from_checkpoint=False)
         metrics = trainer.evaluate()
@@ -421,7 +437,7 @@ def main():
 import json, torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-MODEL_DIR = r"{os.path.abspath(args.merged_out)}"   # merged single model
+MODEL_DIR = r"{os.path.abspath(args.merged_out)}"
 
 tok = AutoTokenizer.from_pretrained(MODEL_DIR)
 model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, device_map="auto", torch_dtype="auto")
