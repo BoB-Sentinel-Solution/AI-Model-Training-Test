@@ -53,3 +53,10 @@ python validate_messages_jsonl.py Learning_Test_Dataset_10.jsonl
 ```
 
 <img width="503" height="119" alt="image" src="https://github.com/user-attachments/assets/c6532cb6-787a-455f-9547-cdc49cbdbbf5" />
+
+---
+
+## 학습한 모델 테스트
+```
+python train_model_test.py --model_dir runs/qwen3b_sft_merged
+```
