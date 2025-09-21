@@ -1,21 +1,9 @@
+# test_print_only.py
 # -*- coding: utf-8 -*-
-"""
-Inference-only tester for PII/secret detector models.
-
-- Loads a merged model (or base) and runs a fixed set of prompts.
-- Prints TTFT, tokens/sec, total latency, raw output, and parsed JSON.
-- Does NOT write any files (print-only).
-"""
-
-import argparse
-import json
-import time
-import threading
-
+import argparse, json, time, threading
+from typing import Optional, Dict, Any
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from transformers.generation.streamers import TextIteratorStreamer
-
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 
 SYS_PROMPT = (
     "You are a strict detector for sensitive entities (PII and secrets). "
@@ -74,64 +62,18 @@ DEFAULT_PROMPTS = [
     "의료 데이터셋에서 환자 개인정보를 제거한 연구용 버전을 생성해: 환자ID P-9981, 이름 이지은, 나이 45, 진단 Hypertension.",
     "시스템 로그에서 IP 주소와 세션 토큰을 탐지해 [MASK] 처리하라: IP=192.168.77.10, session=abcdef12345.",
     "이메일 헤더를 분석해 송신자와 수신자 주소를 마스킹하고, 도메인만 남겨라: From=alice@company.com, To=bob@partner.org.",
-    "보안팀 보고서를 작성하라. 아래 데이터에서 발견된 민감정보 유형과 잠재적 위험을 요약해: 카드번호 4444 3333 2222 1111, CVV 987, 만료일 09/27.",
+    "보안팀 보고서를 작성하라. 아래 데이터에서 발견된 민감정보 유형과 잠재적 위험을 요약해: 카드번호 4444 3333 2222 1111, CVV 987, 만료일 09/27."
 ]
 
-
-def extract_last_json(s: str):
-    """
-    Scan from the end to find the last balanced {...} block and try to parse it.
-    Returns a Python object (dict/list/...) or None if not found/parsable.
-    """
-    # Find last '}' first
-    end = None
-    for i in range(len(s) - 1, -1, -1):
-        if s[i] == '}':
-            end = i
-            break
-    if end is None:
-        return None
-
-    depth = 0
-    # Move backward to find matching '{'
-    for i in range(end, -1, -1):
-        c = s[i]
-        if c == '}':
-            depth += 1
-        elif c == '{':
-            depth -= 1
-            if depth == 0:
-                candidate = s[i:end + 1]
-                try:
-                    return json.loads(candidate)
-                except Exception:
-                    # If this block is not valid JSON, try earlier block (rare)
-                    # Search for the previous '}' and repeat.
-                    # Simplest fallback: strip leading text up to next '{' and retry once
-                    pass
-    return None
-
-
-@torch.inference_mode()
-def infer_once(tok, model, prompt: str, max_new_tokens: int = 256):
-    """
-    Generate once with streaming, measure TTFT and tokens/sec, and parse last JSON.
-    """
+def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, Any]:
     messages = [
         {"role": "system", "content": SYS_PROMPT},
         {"role": "user", "content": prompt}
     ]
-    inputs = tok.apply_chat_template(
-        messages, return_tensors="pt", add_generation_prompt=True
-    ).to(model.device)
+    inputs = tok.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True)
+    inputs = inputs.to(model.device)
 
-    streamer = TextIteratorStreamer(
-        tok,
-        skip_special_tokens=True,
-        decode_kwargs={"skip_special_tokens": True},
-        skip_prompt=True,  # do not echo system/user/assistant
-    )
-
+    streamer = TextIteratorStreamer(tok, skip_special_tokens=True, decode_kwargs={"skip_special_tokens": True})
     gen_kwargs = dict(
         inputs=inputs,
         max_new_tokens=max_new_tokens,
@@ -140,87 +82,88 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256):
         streamer=streamer,
     )
 
-    start = time.perf_counter()
-    first_token_time = None
+    # run generate on a background thread to use the streamer
+    first_token_time: Optional[float] = None
     raw_chunks = []
+    start = time.perf_counter()
 
     def _consume():
         nonlocal first_token_time
-        for _idx, piece in enumerate(streamer):
+        for i, token_text in enumerate(streamer):
             if first_token_time is None:
                 first_token_time = time.perf_counter()
-            raw_chunks.append(piece)
+            raw_chunks.append(token_text)
 
     t = threading.Thread(target=_consume)
     t.start()
-    model.generate(**gen_kwargs)
+
+    with torch.no_grad():
+        model.generate(**gen_kwargs)
+
     t.join()
     end = time.perf_counter()
 
     raw_out = "".join(raw_chunks).strip()
-
     total_ms = (end - start) * 1000.0
     ttft_ms = (first_token_time - start) * 1000.0 if first_token_time else None
 
-    # tokens/sec
-    gen_ids = tok(raw_out, return_tensors="pt")["input_ids"][0]
+    # token/s 계산 (생성 토큰 기준)
+    # 입력/출력 토큰 길이 측정
+    out_ids = tok(raw_out, return_tensors="pt")["input_ids"][0]
+    gen_tokens = out_ids.size(0)
     tok_s = None
     if first_token_time:
-        dur = end - first_token_time
-        if dur > 0:
-            tok_s = gen_ids.size(0) / dur
+        duration_gen = end - first_token_time
+        if duration_gen > 0:
+            tok_s = gen_tokens / duration_gen
 
-    parsed = extract_last_json(raw_out)
+    # JSON 파싱 시도
+    parsed = None
+    try:
+        # 모델이 앞말 덧붙였을 수 있으니 중괄호 첫/끝 구간만 salvage
+        s = raw_out
+        l = s.find("{")
+        r = s.rfind("}")
+        if l != -1 and r != -1 and r > l:
+            parsed = json.loads(s[l:r+1])
+        else:
+            parsed = json.loads(s)  # 혹시 순수 JSON이면
+    except Exception:
+        parsed = None
 
     return {
         "raw": raw_out,
         "json": parsed,
         "ttft_ms": ttft_ms,
         "total_ms": total_ms,
-        "tok_s": tok_s,
+        "tok_s": tok_s
     }
-
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model_dir", type=str, required=True,
-                    help="Path or HF hub id of the merged model (and tokenizer).")
+    ap.add_argument("--model_dir", required=True, help="Merged model dir (e.g., runs/qwen7b_sft_merged)")
     ap.add_argument("--max_new_tokens", type=int, default=256)
-    ap.add_argument("--bf16", action="store_true",
-                    help="Load with bfloat16 (if supported).")
+    ap.add_argument("--limit", type=int, default=0, help="테스트할 프롬프트 개수 제한(0=전체)")
     args = ap.parse_args()
 
-    torch.set_grad_enabled(False)
-
-    # Load tokenizer/model
     tok = AutoTokenizer.from_pretrained(args.model_dir, use_fast=True)
+    model = AutoModelForCausalLM.from_pretrained(args.model_dir, device_map="auto", torch_dtype="auto")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    dtype = torch.bfloat16 if args.bf16 else "auto"
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_dir,
-        device_map="auto",
-        torch_dtype=dtype if dtype != "auto" else None
-    )
-
-    prompts = DEFAULT_PROMPTS
+    prompts = DEFAULT_PROMPTS[: args.limit or None]
 
     for i, p in enumerate(prompts, 1):
         r = infer_once(tok, model, p, max_new_tokens=args.max_new_tokens)
         print(f"\n--- TEST #{i} ---")
         print("prompt:", p)
         print(
-            "ttft_ms:",
-            f"{r['ttft_ms']:.2f}" if r['ttft_ms'] is not None else "NA",
-            "| tok/s:",
-            f"{r['tok_s']:.2f}" if r['tok_s'] is not None else "NA",
-            "| total_ms:",
-            f"{r['total_ms']:.2f}",
+            "ttft_ms:", f"{r['ttft_ms']:.2f}" if r['ttft_ms'] else "NA",
+            "| tok/s:", f"{r['tok_s']:.2f}" if r['tok_s'] else "NA",
+            "| total_ms:", f"{r['total_ms']:.2f}"
         )
         print("output:", r["raw"])
         print("parsed_json:", json.dumps(r["json"], ensure_ascii=False) if r["json"] is not None else "None")
-
 
 if __name__ == "__main__":
     main()
