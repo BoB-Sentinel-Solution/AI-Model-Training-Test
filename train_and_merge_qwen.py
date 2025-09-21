@@ -1,22 +1,34 @@
 # -*- coding: utf-8 -*-
 """
-Qwen 3B/7B — QLoRA/LoRA SFT with CUSTOM MASKING using transformers.Trainer (TRL 불필요)
-- Dataset (JSON/JSONL) rows:
-  {
-    "text": "<string>",
-    "has_sensitive": <bool>,
-    "entities": [
-      {"value": "<substring>", "begin": <int>, "end": <int>, "label": "<LABEL>"}
-    ]
-  }
-- Labels used in target JSON: {USERNAME, PASSWORD, EMAIL, ADDRESS, NAME, BANK_ACCOUNT}
+Qwen 3B/7B — QLoRA/LoRA SFT for JSONL(messages) with CUSTOM MASKING (transformers.Trainer)
+-------------------------------------------------------------------------------------------
+Dataset format (JSONL only; one JSON object per line):
+
+{"id": 1, "messages": [
+  {"role":"system","content":"<system prompt text>"},
+  {"role":"user","content":"<user text>"},
+  {"role":"assistant","content":"<assistant target text>"}
+]}
+
+- Exactly 3 messages per sample: system, user, assistant (in this order).
+- The assistant content is the supervision target (we mask out system/user).
+
+Usage (examples):
+  python train_qwen_jsonl.py --model Qwen/Qwen2.5-7B-Instruct \
+    --data Learning_Test_Dataset_10.jsonl \
+    --out_dir runs/qwen_sft_adapter \
+    --merged_out runs/qwen_sft_merged \
+    --epochs 3 --bf16 --batch 1 --grad_accum 16 --max_len 1024
+
+  # Disable 4-bit (use full-precision LoRA):
+  python train_qwen_jsonl.py ... --no_qlora
 """
 
 import os, json, argparse, random
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 import numpy as np
 import torch
-from torch.utils.data import Dataset as TorchDataset
+from torch.utils.data import Dataset
 
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM,
@@ -27,195 +39,107 @@ from peft import LoraConfig, get_peft_model, PeftModel
 SEED = 42
 random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
 
-# ========================= System Prompt (엄격) =========================
-SYS_PROMPT = """You are "Sensitive-Info Detector", a precision assistant that outputs ONLY one JSON object per request.
+# ----------------------------------------------------------------------------------------
+# Expanded label set (for consistency across project; not directly used by training loop)
+# ----------------------------------------------------------------------------------------
+ALLOWED = {
+    # 개인 식별·연락
+    "NAME","PHONE","EMAIL","ADDRESS","BILLING_ADDRESS","SHIPPING_ADDRESS","POSTAL_CODE",
+    "DATE_OF_BIRTH","RESIDENT_ID","FOREIGNER_ID","PASSPORT","DRIVER_LICENSE","BUSINESS_ID",
+    "TAX_ID","SSN","HEALTH_INSURANCE_ID","EMERGENCY_CONTACT","EMERGENCY_PHONE",
+    # 계정·인증
+    "USERNAME","NICKNAME","ROLE","DEPARTMENT","GROUP","PERMISSION","PASSWORD","PASSWORD_HASH",
+    "SECURITY_QA","MFA_SECRET","BACKUP_CODE","SESSION_ID","COOKIE","JWT","ACCESS_TOKEN",
+    "REFRESH_TOKEN","OAUTH_CLIENT_ID","OAUTH_CLIENT_SECRET","API_KEY","SSH_PRIVATE_KEY",
+    "TLS_PRIVATE_KEY","PGP_PRIVATE_KEY","MNEMONIC","TEMP_CLOUD_CREDENTIAL","DEVICE_ID","IMEI",
+    "SERIAL_NUMBER","BROWSER_FINGERPRINT","SAML_ASSERTION","OIDC_ID_TOKEN","CONNECTION_STRING",
+    "INTERNAL_URL","LAST_LOGIN_IP","LAST_LOGIN_DEVICE","LAST_LOGIN_BROWSER","LAST_LOGIN_AT",
+    # 금융·결제
+    "BANK_NAME","BANK_BRANCH","BANK_ACCOUNT","ACCOUNT_HOLDER","IBAN","SWIFT_BIC","ROUTING_NUMBER",
+    "VIRTUAL_ACCOUNT","CURRENCY","BALANCE","CARD_NUMBER","CARD_EXPIRY","CARD_CVV","CARD_HOLDER",
+    "PAYMENT_PIN","SECURITIES_ACCOUNT","WALLET_ADDRESS","LOYALTY_ID","LOYALTY_BALANCE",
+    # 고객·거래·지원
+    "CUSTOMER_ID","MEMBERSHIP_ID","ORDER_ID","INVOICE_ID","TAX_INVOICE_ID","BILL_ID","REFUND_ID",
+    "EXCHANGE_ID","RMA_ID","TICKET_ID","TRACKING_ID","COUPON_CODE","VOUCHER_CODE",
+    "GATEWAY_CUSTOMER_ID","PAYMENT_PROFILE_ID","BUYER_NAME","RECIPIENT_NAME","CRM_RECORD_ID",
+    "CUSTOMER_NOTE_ID",
+    # 조직
+    "COMPANY_NAME","ORG_NAME","DEPARTMENT_NAME","EMPLOYEE_ID","JOB_TITLE","EMPLOYMENT_TYPE",
+    "HIRE_DATE","LEAVE_DATE","SALARY","BENEFIT_INFO","INSURANCE_INFO","OFFICE_EXT","OFFICE_LOCATION",
+    "WORKSITE","MANAGER_FLAG","ACCESS_CARD_ID","READER_ID","DUTY_ASSIGNMENT","TRAINING_COMPLETION_DATE",
+    "TRAINING_EXPIRY","EDUCATION_CERT"
+}
 
-TASK
-- Given exactly one user sentence (Korean or English), analyze it and return:
-  {
-    "has_sensitive": <boolean>,
-    "entities": [
-      {"label": "<LABEL>", "text": "<exact substring>", "begin": <int>, "end": <int>}
-    ]
-  }
+# ----------------------------------------------------------------------------------------
+# Data loading: JSONL (strict). Each line -> {"id":..., "messages":[{sys},{usr},{asst}]}
+# ----------------------------------------------------------------------------------------
+def read_jsonl_messages(paths: List[str]) -> List[Dict[str, Any]]:
+    rows = []
+    for p in paths:
+        with open(p, "r", encoding="utf-8") as f:
+            for ln, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception as e:
+                    raise ValueError(f"[{p}:L{ln}] JSON parse error: {e}")
+                msgs = obj.get("messages")
+                if not isinstance(msgs, list) or len(msgs) != 3:
+                    raise ValueError(f"[{p}:L{ln}] 'messages' must be list of length 3 (system,user,assistant).")
+                roles = [m.get("role") for m in msgs]
+                if roles != ["system","user","assistant"]:
+                    raise ValueError(f"[{p}:L{ln}] roles must be ['system','user','assistant'], got {roles}.")
+                for i, m in enumerate(msgs):
+                    if "content" not in m or not isinstance(m["content"], str):
+                        raise ValueError(f"[{p}:L{ln}] messages[{i}].content must be a string.")
+                rows.append(obj)
+    return rows
 
-OUTPUT RULES (STRICT)
-1) Output exactly one JSON object. No code fences, no extra text, no explanations. Trim leading/trailing whitespace.
-2) JSON keys MUST appear in this order: has_sensitive, entities.
-3) Each entity object MUST have keys in this order: label, text, begin, end.
-4) Use UTF-8 JSON escaping when required. Do not alter or normalize input text; keep Unicode exactly as given.
-5) Offsets are 0-based character indices in the ORIGINAL input string; end is exclusive.
-6) Sort entities by (begin ASC, end ASC, then label ASC). If duplicates (same label, begin, end) exist, keep only one.
-7) If an entity’s substring doesn’t exactly match the input, adjust begin/end so that text == input[begin:end].
-8) If nothing is extractable, entities = [] and has_sensitive = false.
-9) NEVER invent content. Do not infer hidden values; only label substrings that appear verbatim in the input.
-
-SENSITIVITY POLICY
-- Set has_sensitive = true iff at least one labeled entity is extracted; otherwise false.
-
-SUPPORTED LABELS (UPPERCASE, FIXED SET)
-- USERNAME, PASSWORD, EMAIL, ADDRESS, NAME, BANK_ACCOUNT
-
-BOUNDARY & QUOTING
-- Do not include trailing spaces/punctuation unless part of the entity.
-- Include quotes/brackets only if they are part of the true token.
-
-AMBIGUITY & NEGATION
-- Talking ABOUT sensitive info without showing a concrete value is NOT sensitive.
-
-ROBUSTNESS
-- Preserve original casing and Unicode in "text".
-- If the same value appears multiple times, output each occurrence with correct offsets.
-- Ignore masked placeholders (e.g., ****).
-"""
-
-ALLOWED = {"USERNAME","PASSWORD","EMAIL","ADDRESS","NAME","BANK_ACCOUNT"}
-
-# ========================= IO =========================
-def _read_json_or_jsonl(path: str) -> List[Dict[str, Any]]:
-    with open(path, "r", encoding="utf-8") as f:
-        s = f.read().strip()
-    if not s:
-        return []
-    if "\n" in s and not s.lstrip().startswith("["):  # JSONL heuristic
-        rows = []
-        for line in s.splitlines():
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-        return rows
-    obj = json.loads(s)
-    if isinstance(obj, list):
-        return obj
-    if isinstance(obj, dict) and isinstance(obj.get("files"), list):
-        out = []
-        for p in obj["files"]:
-            out.extend(_read_json_or_jsonl(p))
-        return out
-    raise ValueError(f"Unknown JSON format: {path}")
-
-def load_datasets(paths: List[str]) -> List[List[Dict[str, Any]]]:
-    return [_read_json_or_jsonl(p) for p in paths]
-
-# ========================= normalize to target JSON =========================
-def _safe_entity(text: str, value: str, begin: int, end: int, label: str):
-    if label not in ALLOWED:
-        return None
-    if not isinstance(begin, int) or not isinstance(end, int) or not (0 <= begin < end <= len(text)):
-        return None
-    span = text[begin:end]
-    if not value:
-        value = span
-    if value != span:  # offsets authoritative
-        value = span
-    return {"label": label, "text": value, "begin": begin, "end": end}
-
-def normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
-    text = r.get("text", "")
-    ents_in = r.get("entities") or []
-    ents_out = []
-    for e in ents_in:
-        ent = _safe_entity(text, e.get("value"), int(e.get("begin", -1)), int(e.get("end", -1)), (e.get("label") or "").upper())
-        if ent:
-            ents_out.append(ent)
-    ents_out.sort(key=lambda x: (x["begin"], x["end"], x["label"]))
-    # dedup
-    dedup, seen = [], set()
-    for e in ents_out:
-        k = (e["label"], e["begin"], e["end"])
-        if k not in seen:
-            dedup.append(e); seen.add(k)
-    has_sensitive = bool(dedup) if r.get("has_sensitive") is None else bool(r.get("has_sensitive"))
-    return {"text": text, "has_sensitive": has_sensitive, "entities": dedup}
-
-def to_target_json(r: Dict[str, Any]) -> str:
-    obj = {"has_sensitive": bool(r.get("has_sensitive", False)), "entities": r.get("entities", [])}
-    return json.dumps(obj, ensure_ascii=False)
-
-def to_chat_example(text: str, tgt_json: str) -> Dict[str, Any]:
-    return {"messages": [
-        {"role": "system", "content": SYS_PROMPT},
-        {"role": "user", "content": text},
-        {"role": "assistant", "content": tgt_json}
-    ]}
-
-# ========================= split & mixing =========================
-def split_train_val(rows: List[Dict[str, Any]], val_ratio: float=0.2) -> Tuple[List, List]:
-    n = len(rows)
-    idx = list(range(n)); random.shuffle(idx)
-    k = max(1, int(n*val_ratio)) if n>1 else 1
-    vset = set(idx[:k]); tr, va = [], []
-    for i in range(n):
-        (va if i in vset else tr).append(rows[i])
-    return tr, va
-
-def temp_mix_weights(sizes: List[int], temperature: float) -> List[float]:
-    if temperature <= 0: temperature = 1e-6
-    w = [(s ** (1.0/temperature)) if s>0 else 0.0 for s in sizes]
-    sm = sum(w) or 1.0
-    return [x/sm for x in w]
-
-def pack_epoch(per_ds_train_msgs: List[List[Dict[str,Any]]], samples_per_epoch: int, temperature: float) -> List[Dict[str,Any]]:
-    sizes = [len(x) for x in per_ds_train_msgs]
-    weights = temp_mix_weights(sizes, temperature)
-    counts = [int(round(samples_per_epoch*w)) for w in weights]
-    diff = samples_per_epoch - sum(counts)
-    order = sorted(range(len(counts)), key=lambda i: weights[i], reverse=True)
-    i=0
-    while diff != 0 and order:
-        counts[order[i % len(order)]] += 1 if diff>0 else -1
-        diff += -1 if diff>0 else 1
-        i += 1
-    bucket = []
-    for ds_rows, c in zip(per_ds_train_msgs, counts):
-        if c<=0: continue
-        rows = ds_rows[:]; random.shuffle(rows)
-        if c <= len(rows):
-            bucket.extend(rows[:c])
-        else:
-            bucket.extend(rows)
-            for _ in range(c-len(rows)):
-                bucket.append(random.choice(ds_rows))
-    random.shuffle(bucket)
-    return bucket
-
-# ========================= CUSTOM MASKING =========================
-def build_sample(tok, messages, max_len=1024):
+# ----------------------------------------------------------------------------------------
+# Masking: system/user masked; assistant segment labeled
+# ----------------------------------------------------------------------------------------
+def build_sample(tok, messages: List[Dict[str,str]], max_len: int = 1024):
     """
-    Make tensors with labels on ASSISTANT segment only; system/user are masked (-100).
+    - Compose chat with tokenizer's chat template.
+    - Find assistant segment and label only that region. Others -> -100.
     """
-    # full convo
     full_text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-    # assistant-only
-    assistant_text = tok.apply_chat_template(
-        [{"role":"assistant","content":messages[-1]["content"]}],
+
+    # Build assistant-only text (same formatting as in full chat)
+    asst_only_text = tok.apply_chat_template(
+        [{"role": "assistant", "content": messages[-1]["content"]}],
         tokenize=False, add_generation_prompt=False
     )
-    start_char = full_text.rfind(assistant_text)
+
+    # Locate assistant substring inside the full chat string
+    start_char = full_text.rfind(asst_only_text)
     if start_char == -1:
-        start_char = len(full_text) - len(assistant_text)
+        # fallback: assume assistant text is at the tail
+        start_char = max(0, len(full_text) - len(asst_only_text))
 
     enc_full = tok(full_text, return_tensors="pt", truncation=False)
     input_ids = enc_full["input_ids"][0]
-    attn = enc_full["attention_mask"][0]
+    attn      = enc_full["attention_mask"][0]
 
-    # token start index estimation via prefix tokenization
+    # Token position for assistant segment via tokenizing prefix
     prefix = full_text[:start_char]
     enc_prefix = tok(prefix, return_tensors="pt", truncation=False)
     start_tok = enc_prefix["input_ids"].shape[1]
 
-    enc_asst = tok(assistant_text, return_tensors="pt", truncation=False)
-    asst_len = enc_asst["input_ids"].shape[1]
-    end_tok = start_tok + asst_len
+    enc_asst  = tok(asst_only_text, return_tensors="pt", truncation=False)
+    asst_len  = enc_asst["input_ids"].shape[1]
+    end_tok   = start_tok + asst_len
 
-    # truncate head if too long
+    # Truncate head to fit max_len (keep the tail which usually contains assistant)
     if input_ids.shape[0] > max_len:
         cut = input_ids.shape[0] - max_len
         input_ids = input_ids[cut:]
-        attn = attn[cut:]
+        attn      = attn[cut:]
         start_tok = max(0, start_tok - cut)
-        end_tok = max(0, end_tok - cut)
-        end_tok = min(end_tok, input_ids.shape[0])
+        end_tok   = max(0, end_tok   - cut)
+        end_tok   = min(end_tok, input_ids.shape[0])
 
     labels = torch.full_like(input_ids, fill_value=-100)
     start_tok = max(0, min(start_tok, input_ids.shape[0]))
@@ -225,10 +149,10 @@ def build_sample(tok, messages, max_len=1024):
 
     return {"input_ids": input_ids, "attention_mask": attn, "labels": labels}
 
-class ChatMaskedDataset(TorchDataset):
-    def __init__(self, tok, list_of_messages: List[Dict[str,Any]], max_len=1024):
+class ChatMaskedDataset(Dataset):
+    def __init__(self, tok, list_of_msg_objs: List[Dict[str, Any]], max_len=1024):
         self.tok = tok
-        self.rows = list_of_messages
+        self.rows = list_of_msg_objs
         self.max_len = max_len
     def __len__(self):
         return len(self.rows)
@@ -251,9 +175,10 @@ def pad_collate_fn(batch, pad_id: int, label_pad_id: int = -100):
     labels    = torch.stack([_pad(x, label_pad_id) for x in labels], dim=0)
     return {"input_ids": input_ids, "attention_mask": attn, "labels": labels}
 
-# ========================= TrainingArguments 호환 생성 =========================
+# ----------------------------------------------------------------------------------------
+# TrainingArguments (version-safe construction)
+# ----------------------------------------------------------------------------------------
 def make_training_args(args):
-    # 최신/근접 버전 시도
     try:
         return TrainingArguments(
             output_dir=args.out_dir,
@@ -261,11 +186,11 @@ def make_training_args(args):
             per_device_eval_batch_size=max(1, args.batch//2),
             gradient_accumulation_steps=args.grad_accum,
             learning_rate=args.lr,
-            num_train_epochs=1,  # 에폭은 아래 수동 루프
+            num_train_epochs=1,  # we loop epochs manually
             logging_steps=20,
             evaluation_strategy="steps",
-            eval_steps=100,
-            save_steps=100,
+            eval_steps=200,
+            save_steps=200,
             save_total_limit=2,
             gradient_checkpointing=True,
             bf16=args.bf16,
@@ -276,7 +201,6 @@ def make_training_args(args):
             optim=("paged_adamw_8bit" if not args.no_qlora else "adamw_torch"),
         )
     except TypeError:
-        # 구버전 폴백: 없는 인자들을 제거/대체
         kwargs = dict(
             output_dir=args.out_dir,
             per_device_train_batch_size=args.batch,
@@ -285,21 +209,21 @@ def make_training_args(args):
             learning_rate=args.lr,
             num_train_epochs=1,
             logging_steps=20,
-            save_steps=100,
+            save_steps=200,
             save_total_limit=2,
             remove_unused_columns=False,
         )
-        # fp16/bf16 호환 처리
         if args.bf16 or args.fp16:
             kwargs["fp16"] = True
-        # 구버전에선 평가 전략 인자가 없을 수 있음(우리는 아래에서 수동 evaluate 호출)
         return TrainingArguments(**kwargs)
 
-# ========================= main =========================
+# ----------------------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, help="Base model, e.g., Qwen/Qwen2.5-7B-Instruct")
-    ap.add_argument("--data", required=True, nargs="+", help="One or more dataset files (JSONL/JSON).")
+    ap.add_argument("--data", required=True, nargs="+", help="JSONL file(s); each line has {id, messages[sys,user,assistant]}")
     ap.add_argument("--out_dir", required=True, help="Where to save LoRA adapter")
     ap.add_argument("--merged_out", required=True, help="Where to save merged single model")
     ap.add_argument("--epochs", type=int, default=3)
@@ -307,12 +231,10 @@ def main():
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--grad_accum", type=int, default=4)
     ap.add_argument("--max_len", type=int, default=1024)
-    ap.add_argument("--val_ratio", type=float, default=0.2)
-    ap.add_argument("--samples_per_epoch", type=int, default=4000)
-    ap.add_argument("--temperature", type=float, default=1.3)
+    ap.add_argument("--val_ratio", type=float, default=0.15)
     ap.add_argument("--bf16", action="store_true")
     ap.add_argument("--fp16", action="store_true")
-    ap.add_argument("--no_qlora", action="store_true", help="Disable 4-bit quant; use normal LoRA")
+    ap.add_argument("--no_qlora", action="store_true", help="Disable 4-bit quantization; use standard LoRA")
     ap.add_argument("--lora_r", type=int, default=16)
     ap.add_argument("--lora_alpha", type=int, default=32)
     ap.add_argument("--lora_dropout", type=float, default=0.05)
@@ -321,34 +243,21 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     os.makedirs(args.merged_out, exist_ok=True)
 
-    # Load & normalize
-    raw_sets = load_datasets(args.data)
-    per_ds_train_msgs, all_val_msgs = [], []
-    total_train = 0
-    for rows in raw_sets:
-        rows = [normalize_row(r) for r in rows if r.get("text")]
-        # de-dup by text within each dataset
-        seen=set(); uniq=[]
-        for r in rows:
-            t=r["text"]
-            if t not in seen:
-                uniq.append(r); seen.add(t)
-        rows = uniq
-        if not rows:
-            continue
-        tr, va = split_train_val(rows, args.val_ratio)
-        tr_msgs = [to_chat_example(r["text"], to_target_json(r)) for r in tr]
-        va_msgs = [to_chat_example(r["text"], to_target_json(r)) for r in va]
-        per_ds_train_msgs.append(tr_msgs)
-        all_val_msgs.extend(va_msgs)
-        total_train += len(tr_msgs)
+    # Load JSONL messages
+    all_rows = read_jsonl_messages(args.data)
+    n = len(all_rows)
+    if n == 0:
+        raise RuntimeError("No samples found in the given JSONL file(s).")
 
-    if not per_ds_train_msgs:
-        raise RuntimeError("No training samples. Check --data files.")
-    if not all_val_msgs:
-        all_val_msgs = per_ds_train_msgs[0][:1]
+    # Simple split by id order (or shuffle then split)
+    idx = list(range(n))
+    random.shuffle(idx)
+    k = max(1, int(n * args.val_ratio)) if n > 1 else 1
+    val_idx = set(idx[:k])
+    train_rows = [all_rows[i] for i in range(n) if i not in val_idx]
+    val_rows   = [all_rows[i] for i in range(n) if i in val_idx]
 
-    print(f"[INFO] datasets: {len(per_ds_train_msgs)}, train total: {total_train}, val total: {len(all_val_msgs)}")
+    print(f"[INFO] Loaded samples: {n} (train {len(train_rows)}, val {len(val_rows)})")
 
     # Tokenizer & Model
     tok = AutoTokenizer.from_pretrained(args.model, use_fast=True)
@@ -371,7 +280,7 @@ def main():
         quantization_config=quant_cfg
     )
 
-    # Apply LoRA (PEFT)
+    # Apply LoRA
     peft_cfg = LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
         bias="none", task_type="CAUSAL_LM",
@@ -379,16 +288,13 @@ def main():
     )
     model = get_peft_model(model, peft_cfg)
 
-    # Trainer args (버전 호환)
+    # Datasets
+    ds_train = ChatMaskedDataset(tok, train_rows, max_len=args.max_len)
+    ds_val   = ChatMaskedDataset(tok, val_rows if val_rows else train_rows[:1], max_len=args.max_len)
+    collate  = lambda batch: pad_collate_fn(batch, pad_id=tok.pad_token_id, label_pad_id=-100)
+
+    # Trainer
     train_args = make_training_args(args)
-
-    # epoch 1개 분량 버킷 → Dataset
-    epoch_bucket = pack_epoch(per_ds_train_msgs, args.samples_per_epoch, args.temperature)
-    ds_train = ChatMaskedDataset(tok, epoch_bucket, max_len=args.max_len)
-    ds_val   = ChatMaskedDataset(tok, all_val_msgs, max_len=args.max_len)
-
-    collate = lambda batch: pad_collate_fn(batch, pad_id=tok.pad_token_id, label_pad_id=-100)
-
     trainer = Trainer(
         model=model,
         args=train_args,
@@ -397,12 +303,10 @@ def main():
         data_collator=collate
     )
 
+    # Manual epochs
     total_epochs = args.epochs
     for ep in range(total_epochs):
-        if ep > 0:
-            epoch_bucket = pack_epoch(per_ds_train_msgs, args.samples_per_epoch, args.temperature)
-            trainer.train_dataset = ChatMaskedDataset(tok, epoch_bucket, max_len=args.max_len)
-        print(f"\n[TRAIN] Epoch {ep+1}/{total_epochs} - samples: {len(trainer.train_dataset)}")
+        print(f"\n[TRAIN] Epoch {ep+1}/{total_epochs} - samples: {len(ds_train)}")
         trainer.train()
         try:
             metrics = trainer.evaluate()
@@ -410,7 +314,7 @@ def main():
         except Exception as e:
             print(f"[WARN] evaluate skipped: {e}")
 
-    # LoRA 어댑터 저장(선택) - 체크포인트 외에 명시 저장
+    # Save LoRA adapter explicitly
     model.save_pretrained(args.out_dir)
 
     # Merge LoRA → single model
@@ -420,32 +324,31 @@ def main():
     merged.save_pretrained(args.merged_out)
     tok.save_pretrained(args.merged_out)
 
-    # quick inference helper
+    # Quick inference script
     infer_py = f'''# -*- coding: utf-8 -*-
-import json, torch
+import torch, json
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 MODEL_DIR = r"{os.path.abspath(args.merged_out)}"
-
 tok = AutoTokenizer.from_pretrained(MODEL_DIR)
 model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, device_map="auto", dtype="auto")
 if tok.pad_token is None: tok.pad_token = tok.eos_token
 
-SYS = {json.dumps(SYS_PROMPT, ensure_ascii=False)}
-
-def ask(text: str, max_new_tokens=256):
-    msgs = [{{"role":"system","content":SYS}}, {{"role":"user","content":text}}]
+def chat_once(system_text: str, user_text: str, max_new_tokens=256):
+    msgs = [{{"role":"system","content":system_text}},
+            {{"role":"user","content":user_text}}]
     x = tok.apply_chat_template(msgs, return_tensors="pt", add_generation_prompt=True).to(model.device)
     with torch.no_grad():
-        y = model.generate(x, max_new_tokens=256, do_sample=False, eos_token_id=tok.eos_token_id)
+        y = model.generate(x, max_new_tokens=max_new_tokens, do_sample=False, eos_token_id=tok.eos_token_id)
     print(tok.decode(y[0], skip_special_tokens=True))
 
 if __name__ == "__main__":
+    sys = "You are a strict detector for sensitive entities. Output ONLY one JSON object."
     while True:
         try:
             q = input("text> ").strip()
             if not q: continue
-            ask(q)
+            chat_once(sys, q)
         except (EOFError, KeyboardInterrupt):
             break
 '''
