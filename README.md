@@ -49,6 +49,7 @@ python train_and_merge_qwen.py \
 제작한 데이터셋 오프셋 검증
 
 ```
-# LoRA
 python validate_messages_jsonl.py Learning_Test_Dataset_10.jsonl
 ```
+
+<img width="503" height="119" alt="image" src="https://github.com/user-attachments/assets/c6532cb6-787a-455f-9547-cdc49cbdbbf5" />
