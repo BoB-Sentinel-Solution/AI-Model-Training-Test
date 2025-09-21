@@ -43,3 +43,12 @@ python train_and_merge_qwen.py \
 ## Result
 <img width="1907" height="917" alt="image" src="https://github.com/user-attachments/assets/d1924f9c-dc85-4291-a2a1-f402bedd7c8e" />
 <img width="1898" height="362" alt="image" src="https://github.com/user-attachments/assets/6692f001-46e8-451f-be4f-e5d0b729d68e" />
+
+---
+## 데이터셋 체크
+제작한 데이터셋 오프셋 검증
+
+```
+# LoRA
+python validate_messages_jsonl.py Learning_Test_Dataset_10.jsonl
+```
