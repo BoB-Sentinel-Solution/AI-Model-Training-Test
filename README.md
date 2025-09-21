@@ -16,19 +16,18 @@ pip install seqeval wandb einops
 ## How to run
 ```
 # QLoRA(4bit)
-python train_and_merge_qwen.py \
+python train_qwen_jsonl.py \
   --model Qwen/Qwen2.5-7B-Instruct \
   --data Learning_Test_Dataset_10.jsonl \
   --out_dir runs/qwen7b_sft \
   --merged_out runs/qwen7b_sft_merged \
   --epochs 3 --bf16 \
-  --samples_per_epoch 2000 --temperature 1.3 \
   --batch 1 --grad_accum 16 --max_len 1024
 ```
 
 ```
 # LoRA
-python train_and_merge_qwen.py \
+python train_qwen_jsonl.py \
   --model Qwen/Qwen2.5-3B-Instruct \
   --data Learning_Test_Dataset_10.jsonl \
   --out_dir runs/qwen3b_sft \
