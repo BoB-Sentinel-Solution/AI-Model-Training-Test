@@ -41,3 +41,6 @@ python train_and_merge_qwen_custom_mask.py \
 <img width="1899" height="234" alt="image" src="https://github.com/user-attachments/assets/3275fbd6-fc9f-4852-86c5-7d73d6fc456e" />
 <img width="1893" height="260" alt="image" src="https://github.com/user-attachments/assets/37f0856f-cd75-407f-b25c-799451327dea" />
 
+## Result
+<img width="1907" height="917" alt="image" src="https://github.com/user-attachments/assets/d1924f9c-dc85-4291-a2a1-f402bedd7c8e" />
+<img width="1898" height="362" alt="image" src="https://github.com/user-attachments/assets/6692f001-46e8-451f-be4f-e5d0b729d68e" />
