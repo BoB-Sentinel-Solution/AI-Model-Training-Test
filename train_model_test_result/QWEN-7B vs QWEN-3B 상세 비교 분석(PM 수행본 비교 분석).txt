@@ -1,0 +1,299 @@
+### QWEN-7B vs QWEN-3B 상세 비교 분석
+
+  아래는 두 모델의 탐지 결과가 달랐던 44개 테스트 케이스에 대한 상세 비교입니다.
+
+
+  TEST #1
+     3B*: order_id, email, phone_number, address 탐지
+     7B: `order_id`, `name`*, phone_number, email, address 탐지
+     분석*: 7B 모델이 name("김민서")을 추가로 탐지하여 더 우수합니다.
+
+
+  TEST #2
+     3B*: 타입을 account_id, two_factor_code로 분류
+     7B*: 타입을 username, 2fa_code로 분류
+     분석*: 7B 모델이 더 일반적으로 통용되는 username이라는 타입을 사용하여 약간 더 명확합니다.
+
+
+  TEST #3
+     3B*: APIKey, APIToken 등 일반적인 타입으로 분류
+     7B*: API Key, Personal Access Token, Slack Token으로 구체적인 타입으로 분류
+     분석*: 7B 모델이 각 토큰의 종류를 더 정확하게 식별하여 훨씬 우수합니다.
+
+
+  TEST #4
+     3B*: 두 토큰 모두 token으로 분류
+     7B*: 각각 access_token, refresh_token으로 분류
+     분석*: 7B 모델이 토큰의 역할을 구분하여 더 우수합니다.
+
+
+  TEST #5
+     3B*: 금액을 amount로, IBAN을 DE89... 값만 탐지
+     7B*: 금액을 currency로, IBAN을 IBAN DE89... 전체 문자열로 탐지
+     분석*: 탐지 범위와 타입 분류에서 약간의 차이가 있으나, 성능상 큰 우열을 가리기는 어렵습니다.
+
+
+  TEST #6
+     3B*: department("영업부") 탐지
+     7B*: department 탐지 못함
+     분석*: 3B 모델이 department를 탐지하여 이 케이스에서는 더 우수합니다.
+
+
+  TEST #7
+     3B*: ID_NUMBER, COMPANY_NAME, PERSON_NAME으로 분류
+     7B*: business registration number, company name, representative name으로 분류
+     분석*: 7B 모델이 더 설명적인 타입을 사용하여 가독성이 좋습니다.
+
+
+  TEST #8
+     3B*: timestamp("2025-09-15 102233") 탐지
+     7B*: timestamp 탐지 못함
+     분석*: 3B 모델이 timestamp를 탐지하여 이 케이스에서는 더 우수합니다.
+
+  TEST #9
+     3B*: 전화번호를 phone으로 분류
+     7B*: phone_number로 분류
+     분석*: 7B 모델의 타입명이 약간 더 명확합니다.
+
+
+  TEST #10
+     3B*: contract_code, document_reference 2개 탐지
+     7B*: contract_id 1개만 탐지
+     분석*: 3B 모델이 '계약서 열람 기록'이라는 컨텍스트까지 document_reference로 탐지하여 더 많은 정보를
+  포착했습니다.
+
+
+  TEST #11
+     3B*: InvoiceNumber를 탐지하고 값을 [MASK] 처리
+     7B*: InvoiceNumber를 탐지하지 못하고, Amount의 원본 값을 노출
+     분석*: 3B 모델이 더 많은 정보를 탐지하고 마스킹 지시까지 이해한 것으로 보여 더 우수합니다.
+
+
+  TEST #12
+     3B*: Password만 탐지
+     7B*: User("sa")를 추가로 탐지
+     분석*: 7B 모델이 사용자 계정까지 탐지하여 더 우수합니다.
+
+
+  TEST #13
+     3B*: token으로 분류
+     7B*: PAT (Personal Access Token)으로 분류
+     분석*: 7B 모델이 더 구체적인 타입을 사용하여 우수합니다.
+
+
+  TEST #14
+     3B*: file_name을 [MASKED] 처리
+     7B*: DriveID를 추가 탐지하고, 파일명을 마스킹 없이 노출
+     분석*: 7B가 DriveID를 추가 탐지했지만, 3B는 마스킹 지시를 이해한 것으로 보여 목적에 따라 평가가 갈릴 수
+   있습니다.
+
+
+  TEST #15 (주요 차이)
+     3B*: session_token을 API_KEY로 탐지
+     7B: 민감 정보를 탐지하지 못함 (False Negative)*
+     분석*: 7B 모델이 명백한 민감 정보를 놓쳤으므로, 이 케이스는 3B 모델이 더 안전한 결과를 보여줬습니다.
+
+
+  TEST #16
+     3B*: pii_customer_id, pii_crm_record_id로 분류
+     7B*: customer ID, CRM record ID로 분류
+     분석*: 7B 모델의 타입명이 더 간결하고 직관적입니다.
+
+
+  TEST #17
+     3B*: address, customer_id 탐지
+     7B*: invoice number를 추가로 탐지
+     분석*: 7B 모델이 더 많은 민감 정보를 탐지하여 우수합니다.
+
+  TEST #18
+     3B*: mfa_token으로 분류
+     7B*: mfa_code로 분류
+     분석*: 의미는 같으나 표현의 차이만 있습니다.
+
+
+  TEST #19
+     3B*: name, account_number, salary 탐지
+     7B*: employee_id를 추가로 탐지
+     분석*: 7B 모델이 사번을 추가 탐지하여 더 우수합니다.
+
+
+  TEST #21
+     3B*: 주민등록번호를 중국어 居民身份证号码로 잘못 분류
+     7B*: national_id로 올바르게 분류
+     분석*: 7B 모델이 명백히 우수합니다. 3B 모델은 오류를 보였습니다.
+
+
+  TEST #23
+     3B*: 카드번호 값에서 공백을 제거한 5555444433332222를 탐지
+     7B*: 공백이 포함된 원본 5555 4444 3333 2222를 탐지
+     분석*: 7B 모델이 원본 형태를 유지하여 더 정확합니다.
+
+
+  TEST #24
+     3B*: token으로 분류
+     7B*: session token으로 분류
+     분석*: 7B 모델이 더 구체적인 타입을 사용하여 우수합니다.
+
+
+  TEST #26
+     3B*: pii_order_number 값을 [MASK] 처리
+     7B*: order number의 원본 값을 그대로 노출
+     분석*: 3B 모델이 마스킹 지시를 이해하여 더 우수합니다.
+
+
+  TEST #28
+     3B*: Amount("KRW 20,000") 탐지
+     7B*: Amount 탐지 못함
+     분석*: 3B 모델이 금액 정보를 탐지하여 더 우수합니다.
+
+
+  TEST #29 (주요 차이)
+     3B*: ID, Company, Finance를 민감 정보로 탐지
+     7B: 민감 정보를 탐지하지 못함 (False Negative)*
+     분석*: 7B 모델이 민감 정보를 놓쳤으므로, 3B 모델이 더 안전한 결과를 보여줬습니다.
+
+
+  TEST #30
+     3B*: API key로 분류
+     7B*: Webhook URL로 분류
+     분석*: 7B 모델의 타입 분류가 더 정확합니다.
+
+
+  TEST #31
+     3B*: name, phone_number만 탐지하고 원본 노출
+     7B: `department`를 추가 탐지하고, 전화번호를 `내선 023-*-**`로 마스킹
+     분석*: 7B 모델이 더 많은 정보를 탐지하고 마스킹 지시까지 수행하여 우수합니다.
+
+
+  TEST #32
+     3B*: medical_record_id, patient_name으로 분류
+     7B*: patient_id, name으로 분류
+     분석*: 7B 모델이 더 일반적인 용어를 사용하여 가독성이 좋습니다.
+
+
+  TEST #33
+     3B*: 제목(M&A Plan)을 text로 탐지
+     7B*: 제목을 탐지하지 못함
+     분석*: 3B 모델이 제목의 민감성을 인지하여 더 우수합니다.
+
+
+  TEST #34
+     3B*: card로 분류
+     7B*: card number로 분류
+     분석*: 7B 모델의 타입명이 더 명확합니다.
+
+
+  TEST #35
+     3B*: SecretName, SecretValue 탐지
+     7B*: VaultName을 추가로 탐지
+     분석*: 7B 모델이 더 넓은 컨텍스트를 탐지하여 우수합니다.
+
+
+  TEST #36
+     3B*: ID, ADDRESS, AMOUNT (대문자)로 분류
+     7B*: name, address, amount (소문자)로 분류하고, '청구지'를 name으로 인식
+     분석*: 타입 분류의 일관성이나 정확성 면에서 7B가 약간 더 나아 보입니다.
+
+
+  TEST #37
+     3B*: csrftoken=xyz123 전체를 token 값으로 탐지
+     7B*: xyz123만 token 값으로 추출
+     분석*: 7B 모델이 실제 값만 정확히 추출하여 더 우수합니다.
+
+
+  TEST #38
+     3B*: Value 값만 Secret으로 탐지
+     7B*: SecretName을 Secret으로, Value를 Value로 각각 탐지
+     분석*: 7B 모델이 이름과 값을 별개의 엔티티로 구분하여 더 정확합니다.
+
+
+  TEST #39
+     3B*: card_number, currency 탐지
+     7B*: credit card number만 탐지하고 currency는 탐지 못함
+     분석*: 3B 모델이 통화 정보를 추가로 탐지하여 더 우수합니다.
+
+
+  TEST #40
+     3B*: SSH private key 블록만 탐지
+     7B*: User와 Host 정보를 추가로 탐지
+     분석*: 7B 모델이 키 외의 컨텍스트 정보까지 탐지하여 더 우수합니다.
+
+
+  TEST #42
+     3B*: customer_id로 분류
+     7B*: customer ID로 분류
+     분석*: 표기 방식의 차이일 뿐, 성능 차이는 거의 없습니다.
+
+
+  TEST #43
+     3B*: 주민등록번호를 일반적인 PII로 분류
+     7B*: national_id로 더 구체적으로 분류
+     분석*: 7B 모델의 타입 분류가 더 구체적이어서 우수합니다.
+
+
+  TEST #44
+     3B*: AWSAccessKeyId, AWSAccessSecret으로 분류
+     7B*: AWS Access Key, AWS Secret Key로 분류
+     분석*: 7B 모델이 공백을 포함한 더 읽기 좋은 타입명을 사용했습니다.
+
+
+  TEST #45
+     3B*: API 키 값(AIzaSyFakeKey123)만 추출
+     7B*: 키-값 쌍 전체(GOOGLE_API_KEY=AIzaSyFakeKey123)를 추출
+     분석*: 실제 키 값만 추출한 3B 모델이 더 정확한 목적을 달성했습니다.
+
+
+  TEST #46
+     3B*: 전화번호 원본(010-5566-7788)을 노출
+     7B: 전화번호를 `010-****7788`로 마스킹
+     분석*: 7B 모델이 마스킹 지시를 이해하고 수행하여 더 우수합니다.
+
+
+  TEST #47
+     3B*: pii_id로 분류
+     7B*: patient ID로 분류
+     분석*: 7B 모델의 타입명이 더 명확합니다.
+
+
+  TEST #48
+     3B*: IP_ADDRESS, TOKEN (대문자)으로 분류
+     7B*: IP address, session token (소문자 및 더 구체적)으로 분류
+     분석*: 7B 모델의 타입 분류가 더 구체적이고 일관성이 있습니다.
+
+
+  TEST #50
+     3B*: 만료일을 0927로, CVV를 cvv로 탐지
+     7B*: 만료일을 09/27로, CVV를 security code로 탐지
+     분석*: 7B 모델이 원본 값의 형식을 유지하고 더 명확한 타입을 사용하여 우수합니다.
+
+  ### 총평: 어떤 모델이 더 민감정보를 잘 탐지하는가?
+
+  QWEN-7B 모델이 전반적으로 더 우수합니다.
+
+
+  [QWEN-7B의 장점]
+     더 구체적이고 정확한 분류*: token을 access_token, PAT 등으로 정확히 구분하고, APIKey를 Slack Token,
+  Personal Access Token 등으로 세분화하는 등 엔티티의 종류를 매우 정확하게 식별합니다.
+     더 많은 정보 탐지*: name, employee_id, VaultName 등 3B 모델이 놓치는 정보를 추가로 탐지하는 경우가
+  많았습니다.
+     가독성 및 일관성*: 타입명을 user_id보다 username으로, 대문자보다 소문자로 사용하는 등 더 일관되고
+  가독성 좋은 결과를 보여줍니다.
+     지시 사항 이해*: 일부 케이스(e.g., #31, #46)에서 마스킹 지시를 더 잘 이해하고 수행했습니다.
+
+
+  [QWEN-7B의 단점 / QWEN-3B의 장점]
+     치명적인 탐지 누락 (False Negative): TEST #15, #29*에서 7B 모델은 명백한 민감 정보를 탐지하지
+  못했습니다. 민감 정보 탐지 모델에서 '못 잡는 것'은 '잘못 잡는 것'보다 더 위험할 수 있습니다. 이런 면에서는
+   3B 모델이 더 안전한 선택일 수 있습니다.
+     부분적인 탐지 누락*: department(부서), timestamp(시간), Amount(금액) 등 일부 케이스에서 3B 모델이
+  탐지한 정보를 7B 모델은 놓치기도 했습니다.
+
+
+  결론적으로,
+  QWEN-7B 모델은 탐지한 정보의 '질(Quality)' 즉, 정확성과 구체성 면에서 월등히 뛰어납니다. 하지만 몇몇
+  중요한 정보를 놓치는 '탐지율(Recall)' 에서 약점을 보였습니다.
+
+
+  따라서 "탐지된 민감정보를 얼마나 정확하게 분류하는가"가 중요하다면 QWEN-7B가 훨씬 좋은 모델입니다.
+  반면, "단 하나의 민감정보도 놓치지 않는 것이 중요하다면(宁杀错不放过)" 일부 부정확한 분류를 감수하더라도
+  QWEN-3B가 더 나은 선택일 수 있습니다.

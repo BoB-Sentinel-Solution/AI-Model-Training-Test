@@ -1,0 +1,402 @@
+ --- TEST #1 ---
+  prompt: {"id":"1","text":"주문 확인 좀 해줄래요? 주문ID ORDER-25-0912-ABCD-7788, 수령인 김민서, 연락처
+  010-1234-5678, 이메일 minseo.kim@example.com, 주소 서울 강남구 테헤란로 12 5층(06234) 입니다."}
+  output: {"has_sensitive": true, "entities": [{"type": "order_id", "value": "ORDER-25-0912-ABCD-7788"},
+  {"type": "name", "value": "김민서"}, {"type": "phone_number", "value": "010-1234-5678"}, {"type": "email",
+   "value": "minseo.kim@example.com"}, {"type": "address", "value": "서울 강남구 테헤란로 12 5층(06234)"}]}
+
+
+  --- TEST #2 ---
+  prompt: {"id":"2","text":"계정 잠금 해제 가능한가요? 계정ID ms.park, 비밀번호 SuperSecret!234, 2FA
+  백업코드 ABCD-EFGH-IJKL-MNOP, 최근 로그인 IP 192.168.10.45, 브라우저 Chrome 입니다."}
+  output: {"has_sensitive": true, "entities": [{"type": "account_id", "value": "ms.park"}, {"type":
+  "password", "value": "SuperSecret!234"}, {"type": "two_factor_code", "value": "ABCD-EFGH-IJKL-MNOP"},
+  {"type": "ip_address", "value": "192.168.10.45"}]}
+
+
+  --- TEST #3 ---
+  prompt: {"id":"3","text":"아래 JWT와 refresh_token이 유효한지 점검해줄 수 있나요? Authorization: Bearer
+  eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.EXAMPLE.zzZEXAMPLE /
+  refresh_token=eyJraWQiOiJLT0RFIiJ9.EXAMPLE.SIGN"}
+  output: {"has_sensitive": true, "entities": [{"type": "token", "value":
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.EXAMPLE.zzZEXAMPLE"}, {"type": "token", "value":
+  "eyJraWQiOiJLT0RFIiJ9.EXAMPLE.SIGN"}]}
+
+
+  --- TEST #4 ---
+  prompt: {"id":"4":,"text":"해외 송금 정보는 어떻게 표시되나요? IBAN DE89370400440532013000, BIC DEUTDEFF,
+  수취인 이름 Hans Müller, 금액 EUR 1,250.00 입니다."}
+  output: {"has_sensitive": true, "entities": [{"type": "IBAN", "value": "DE89370400440532013000"}, {"type":
+   "BIC", "value": "DEUTDEFF"}, {"type": "name", "value": "Hans Müller"}, {"type": "amount", "value": "EUR
+  1,250.00"}]}
+
+
+  --- TEST #5 ---
+  prompt: {"id":"5","text":"카드 결제 실패 원인 알려줄래요? 카드번호 4111 1111 1111 1111, 유효기간 12/27,
+  CVV 123, 카드소유자 Choi Hana, 주문ID ORDER-2025-HELLO-9876 입니다."}
+  output: {"has_sensitive": true, "entities": [{"type": "card_number", "value": "4111111111111111"},
+  {"type": "expiration_date", "value": "12/27"}, {"type": "cvv", "value": "123"}, {"type": "name", "value":
+  "Choi Hana"}, {"type": "order_id", "value": "ORDER-2025-HELLO-9876"}]}
+
+
+  --- TEST #6 ---
+  prompt: {"id":"6","text":"계좌이체 내역 표시 기준이 궁금해요. 은행 국민은행 강남지점, 예금주 홍길동,
+  계좌번호 123-456-789012, 통화 KRW, 금액 ₩1,980,000 입니다."}
+  output: {"has_sensitive": true, "entities": [{"type": "bank_name", "value": "국민은행 강남지점"}, {"type":
+   "name", "value": "홍길동"}, {"type": "account_number", "value": "123-456-789012"}, {"type": "amount",
+  "value": "₩1,980,000"}]}
+
+
+  --- TEST #7 ---
+  prompt: {"id":"7","text":"고객·주문 식별자 마스킹 예시 보여줄래요? 고객번호 CUST-002931, CRM 레코드ID
+  CRM-7F2A-11EE-BC12, 주문ID ORDER-2025-0912-XYZ-7788, 연락처 010-2233-4455 입니다."}
+  output: {"has_sensitive": true, "entities": [{"type": "pii_customer_id", "value": "CUST-002931"}, {"type":
+   "pii_crm_record_id", "value": "CRM-7F2A-11EE-BC12"}, {"type": "order_id", "value":
+  "ORDER-2025-0912-XYZ-7788"}, {"type": "phone_number", "value": "010-2233-4455"}]}
+
+
+  --- TEST #8 ---
+  prompt: {"id":"8","text":"청구 관련 문의입니다. 송장번호 INV-2025-000123, 청구지 부산 해운대구 A로 77
+  1203호, 게이트웨이 고객ID cus_FAKE12345, 쿠폰 CP-TEST-8899 가 포함돼요."}
+  output: {"has_sensitive": true, "entities": [{"type": "invoice_number", "value": "INV-2025-000123"},
+  {"type": "address", "value": "부산 해운대구 A로 77 1203호"}, {"type": "customer_id", "value":
+  "cus_FAKE12345"}, {"type": "coupon_code", "value": "CP-TEST-8899"}]}
+
+
+  --- TEST #9 ---
+  prompt: {"id":"9","text":"세션/쿠키가 포함된 로그는 어떻게 처리돼요? Cookie: sessionid=s%3AEXAMPLE._SIG_;
+  XSRF-TOKEN=EXAMPLETOKEN123; csrftoken=xyz123"}
+  output: {"has_sensitive": true, "entities": [{"type": "token", "value": "sessionid=s%3AEXAMPLE._SIG_"},
+  {"type": "token", "value": "XSRF-TOKEN=EXAMPLETOKEN123"}, {"type": "token", "value": "csrftoken=xyz123"}]}
+
+
+  --- TEST #10 ---
+  prompt: {"id":"10","text":"데이터베이스/메시지 브로커 연결문자열이 있을 때 표시는요?
+  postgres://admin:Pa55w0rd!@db.internal.local:5432/app, amqp://user:pass@mq.internal:5672/vhost"}
+  output: {"has_sensitive": true, "entities": [{"type": "username", "value": "admin"}, {"type": "password",
+  "value": "Pa55w0rd!"}, {"type": "username", "value": "user"}, {"type": "password", "value": "pass"}]}
+
+
+  --- TEST #11 ---
+  prompt: {"id":"11","text":"아래 AWS 자격증명이 포함되면 어떤 마스킹이 적용되나요? AKIAEXAMPLEEXAMPLE /
+  wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY / AWS_SESSION_TOKEN=FQoGZXIvYXdzEEXAMPLETOKEN"}
+  output: {"has_sensitive": true, "entities": [{"type": "AWSAccessKeyId", "value": "AKIAEXAMPLEEXAMPLE"},
+  {"type": "AWSAccessSecret", "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}, {"type": "token",
+  "value": "FQoGZXIvYXdzEEXAMPLETOKEN"}]}
+
+
+  --- TEST #12 ---
+  prompt: {"id":"12","text":"OAuth 승인코드와 PKCE code_verifier가 있을 때 처리 기준이 궁금해요.
+  code=EXAMPLECODE123 / code_verifier=s0m3SuPerLongCodeVerifierValue / client_id=example-client /
+  client_secret=EXAMPLE_CLIENT_SECRET_123"}
+  output: {"has_sensitive": true, "entities": [{"type": "auth_code", "value": "EXAMPLECODE123"}, {"type":
+  "code_verifier", "value": "s0m3SuPerLongCodeVerifierValue"}, {"type": "client_id", "value":
+  "example-client"}, {"type": "client_secret", "value": "EXAMPLE_CLIENT_SECRET_123"}]}
+
+
+  --- TEST #13 ---
+  prompt: {"id":"13","text":"배송 문의입니다. 운송장번호 WAYBILL-8A2C-9930, 수령인 김서윤, 연락처
+  010-9876-1234, 이메일 sykim@example.com, 배송지 서울 서초구 서초대로 77 9층 입니다."}
+  output: {"has_sensitive": true, "entities": [{"type": "waybill_number", "value": "WAYBILL-8A2C-9930"},
+  {"type": "name", "value": "김서윤"}, {"type": "phone_number", "value": "010-9876-1234"}, {"type": "email",
+   "value": "sykim@example.com"}, {"type": "address", "value": "서울 서초구 서초대로 77 9층"}]}
+
+
+  --- TEST #14 ---
+  prompt: {"id":"14","text":"인사 요청 처리 예시를 볼 수 있을까요? 사번 EMP-20192, 조직 보안기술팀, 직무
+  분석가, 급여 6,000만원, 출입카드 RD-9988 이 포함돼요."}
+  output: {"has_sensitive": true, "entities": [{"type": "employee_number", "value": "EMP-20192"}, {"type":
+  "department", "value": "보안기술팀"}, {"type": "job_title", "value": "분석가"}, {"type": "salary",
+  "value": "6,000만원"}, {"type": "card_id", "value": "RD-9988"}]}
+
+
+  --- TEST #15 ---
+  prompt: {"id":"15","text":"본인확인 서류가 포함된 경우는요? 성명 박서윤, 주민등록번호 900101-1234567, 전화
+   010-5678-1234, 이메일 seoyoon.park@example.com, 주소 대전 유성구 대학로 10 3층(34141) 입니다."}
+  output: {"has_sensitive": true, "entities": [{"type": "name", "value": "박서윤"}, {"type": "ssn", "value":
+   "900101-1234567"}, {"type": "phone", "value": "010-5678-1234"}, {"type": "email", "value":
+  "seoyoon.park@example.com"}, {"type": "address", "value": "대전 유성구 대학로 10 3층(34141)"}]}
+
+
+  --- TEST #16 ---
+  prompt: {"id":"16","text":"클라우드/SSO 관련 정보 처리 기준이 뭐죠? GCP Service Account JSON의
+  private_key/client_email, SAMLResponse=PHNhbWx…==, Kubeconfig 토큰 eyJhbGciOiJSUzI1NiIs… 가 들어갑니다."}
+  output: {"has_sensitive": true, "entities": [{"type": "private_key", "value": "private_key"}, {"type":
+  "email", "value": "client_email"}, {"type": "token", "value": "PHNhbWx…=="}, {"type": "token", "value":
+  "eyJhbGciOiJSUzI1NiIs…"}]}
+
+
+  --- TEST #17 ---
+  prompt: {"id":"17","text":"재고 보상 요청서에 환불ID REF-24-7788, 교환ID EX-24-1122, 고객계약번호
+  CNTR-25-ABCD-A9K4, 지원 티켓 TKT-HEL-1122 가 있을 때 마스킹 결과가 궁금해요."}
+  output: {"has_sensitive": true, "entities": [{"type": "refund_id", "value": "REF-24-7788"}, {"type":
+  "exchange_id", "value": "EX-24-1122"}, {"type": "contract_number", "value": "CNTR-25-ABCD-A9K4"}, {"type":
+   "ticket_number", "value": "TKT-HEL-1122"}]}
+
+
+  --- TEST #18 ---
+  prompt: {"id":"18","text":"금융 계정과 가상자산이 함께 있을 때요. 증권계좌 012-3456789-00, BTC 지갑주소
+  1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa, ETH 주소 0xABCDabcdABCDabcdABCDabcdABCDabcdABCD1234 는 어떻게
+  표시되나요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "account_number", "value": "012-3456789-00"},
+  {"type": "wallet_address", "value": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}, {"type": "wallet_address",
+  "value": "0xABCDabcdABCDabcdABCDabcdABCDabcdABCD1234"}]}
+
+
+  --- TEST #19 ---
+  prompt: {"id":"19","text":"다음 정보들이 포함된 문의를 안전하게 보여줄 수 있나요? 계정ID lee.min, 권한
+  admin, scope=repo,workflow, 최근 로그인 기기 Mac/Edge, 우편번호 06018, 생년월일 1990-05-21, OAuth ID 토큰
+  eyJ0eXAiOiJKV1Qi…."}
+  output: {"has_sensitive": true, "entities": [{"type": "account_id", "value": "lee.min"}, {"type":
+  "permission", "value": "admin"}, {"type": "zip_code", "value": "06018"}, {"type": "date_of_birth",
+  "value": "1990-05-21"}, {"type": "token", "value": "eyJ0eXAiOiJKV1Qi…"}]}
+
+
+  --- TEST #20 ---
+  prompt: {"id":"20","text":"인사팀에서 인사이동 내역 업데이트 요청이 들어왔어. 이번에 이동 대상자는
+  김지훈(사번 20250912001)이고, 기존 부서는 IT운영팀이었는데 이번 달부터 보안관제센터로 배속됐어.
+  주민등록번호는 940215-1234567이고, 이메일은 jh.kim@corp-example.com이야. 직책은 보안관제 주임으로
+  변경됐으니 HR 시스템에 반영해줘."}
+  output: {"has_sensitive": true, "entities": [{"type": "name", "value": "김지훈"}, {"type":
+  "employee_number", "value": "20250912001"}, {"type": "department", "value": "IT운영팀"}, {"type":
+  "department", "value": "보안관제센터"}, {"type": "ssn", "value": "940215-1234567"}, {"type": "email",
+  "value": "jh.kim@corp-example.com"}, {"type": "job_title", "value": "보안관제 주임"}]}
+
+
+  --- TEST #21 ---
+  prompt: {"id":"21","text":"회계팀에서 지난 분기 거래처 정산 요청이 있어. 거래처는 하나테크솔루션(주)이고,
+  계좌번호는 110-234-567890, 예금주도 동일하게 하나테크솔루션이야. 사업자등록번호는 123-45-67890이고, 담당자
+   이메일은 finance@hanatech.co.kr로 등록돼 있어. 정확한 잔액과 미결제 내역을 확인해서 정산 보고서를
+  작성해줘."}
+  output: {"has_sensitive": true, "entities": [{"type": "COMPANY_NAME", "value": "하나테크솔루션(주)"},
+  {"type": "account_number", "value": "110-234-567890"}, {"type": "ID_NUMBER", "value": "123-45-67890"},
+  {"type": "email", "value": "finance@hanatech.co.kr"}]}
+
+
+  --- TEST #22 ---
+  prompt: {"id":"22","text":"IT 보안팀에서 서버 보안 점검을 요청했어. 문제가 된 서버 관리자 계정은
+  sysadmin01이고 현재 권한은 root로 부여돼 있어. 접속에는 SSH 개인키(OpenSSH 형식)가 사용되고, 세션 쿠키
+  값은 SESSIONID=xyz987654321이야. 최근 비정상적인 로그인 시도가 있었으니 해당 계정의 인증정보를 재발급하고,
+   API Access Token 사용 내역도 로그로 정리해줘."}
+  output: {"has_sensitive": true, "entities": [{"type": "account_id", "value": "sysadmin01"}, {"type":
+  "permission", "value": "root"}, {"type": "SSH private key", "value": "SSH 개인키(OpenSSH 형식)"}, {"type":
+   "token", "value": "SESSIONID=xyz987654321"}, {"type": "token_type", "value": "API Access Token"}]}
+
+
+  --- TEST #23 ---
+  prompt: {"id":"23","text":"영업팀에서 고객 클레임 건 확인 요청이 왔어. 주문번호는 ORD-20250912-778899이고,
+   고객 닉네임은 skywalker88이야. 배송지는 서울특별시 강남구 테헤란로 123, 우편번호 06236이고, 결제 수단은
+  카드번호 4111-1111-1111-1111, 유효기간 12/27, CVV 123이 사용됐어. 고객이 배송 지연을 문제 삼고 있으니 배송
+   현황을 확인하고, 필요하다면 환불 프로세스도 검토해줘."}
+  output: {"has_sensitive": true, "entities": [{"type": "order_id", "value": "ORD-20250912-778899"},
+  {"type": "account_id", "value": "skywalker88"}, {"type": "address", "value": "서울특별시 강남구 테헤란로
+  123"}, {"type": "zip_code", "value": "06236"}, {"type": "card_number", "value": "4111111111111111"},
+  {"type": "expiration_date", "value": "12/27"}, {"type": "cvv", "value": "123"}]}
+
+
+  --- TEST #24 ---
+  prompt: {"id":"24","text":"인사팀에서 해외출장 신청서를 작성해달라고 했어. 대상자는 해외영업팀 과장
+  이준혁이고, 여권번호는 M12345678이야. 주민등록번호는 900101-1234567이고, Tax Identification Number는
+  TIN-56789-2025로 등록돼 있어. 출장 목적은 유럽 지사와의 신규 계약 협상이고 체류 기간은 2주 예정이야. 이
+  정보를 토대로 출장 신청서를 작성해줘."}
+  output: {"has_sensitive": true, "entities": [{"type": "name", "value": "이준혁"}, {"type":
+  "passport_number", "value": "M12345678"}, {"type": "ssn", "value": "900101-1234567"}, {"type":
+  "tax_id_number", "value": "TIN-56789-2025"}]}
+
+
+  --- TEST #25 ---
+  prompt: {"id":"25","text":"법무팀에서 신규 계약 검토 요청이 들어왔어. 계약 상대는 FutureSoft Ltd.이고,
+  담당자의 Tax Identification Number는 TIN-778899-55-2025야. 여권번호는 L98765432로 확인됐어. 우리 쪽
+  담당자는 법무팀 변호사 김도경(사번 20250912018)이고, 검토 업무를 맡고 있어. 개인정보 처리 항목과 법적
+  리스크를 분석하고, GDPR 준수 여부를 포함해 리스크 보고서를 작성해줘."}
+  output: {"has_sensitive": true, "entities": [{"type": "COMPANY_NAME", "value": "FutureSoft Ltd."},
+  {"type": "tax_id_number", "value": "TIN-778899-55-2025"}, {"type": "passport_number", "value":
+  "L98765432"}, {"type": "name", "value": "김도경"}, {"type": "employee_number", "value": "20250912018"}]}
+
+
+  --- TEST #26 ---
+  prompt: {"id":"26","text":"재무팀에서 이번 분기 부가세 신고 준비를 요청했어. 거래처 회사명은 다온테크,
+  사업자등록번호는 987-65-43210이고, 계좌번호는 333-222-111444야. 세무 담당자 이메일은
+  tax@daontech.co.kr이고, 담당 직원은 재무팀 대리 김유진(사번 20250912022)이야. 세금계산서 발행 내역과 미납
+  건을 정리해서 보고해줘."}
+  output: {"has_sensitive": true, "entities": [{"type": "COMPANY_NAME", "value": "다온테크"}, {"type":
+  "ID_NUMBER", "value": "987-65-43210"}, {"type": "account_number", "value": "333-222-111444"}, {"type":
+  "email", "value": "tax@daontech.co.kr"}, {"type": "name", "value": "김유진"}, {"type": "employee_number",
+  "value": "20250912022"}]}
+
+
+  --- TEST #27 ---
+  prompt: {"id":"27","text":"고객센터에서 민원 처리 요청이 있어. 고객 성명은 박지민이고, 연락처는
+  010-9876-5432, 이메일은 customer01@example.com이야. 주문번호는 ORD-20250912-1001이고, 배송지는 서울특별시
+  마포구 월드컵북로 100이야. 결제는 카드번호 5555-6666-7777-8888, 유효기간 10/28, CVV 456으로 처리됐어. 해당
+   주문의 환불 요청이 접수됐으니 결제 취소 진행 가능 여부를 확인해줘."}
+  output: {"has_sensitive": true, "entities": [{"type": "name", "value": "박지민"}, {"type": "phone_number",
+   "value": "010-9876-5432"}, {"type": "email", "value": "customer01@example.com"}, {"type": "order_id",
+  "value": "ORD-20250912-1001"}, {"type": "address", "value": "서울특별시 마포구 월드컵북로 100"}, {"type":
+  "card_number", "value": "5555666677778888"}, {"type": "expiration_date", "value": "10/28"}, {"type":
+  "cvv", "value": "456"}]}
+
+
+  --- TEST #28 ---
+  prompt: {"id":"28","text":"보안팀에서 다중인증 등록 현황 점검 요청이 왔어. 계정ID는 it_admin05이고, 권한은
+   관리자 권한이야. MFA 등록 디바이스는 Galaxy S22 (ID: MFA12345)로 확인돼. 등록된 백업코드도 유효한지
+  확인해서 보고서를 작성해줘. 특히 인증 로그에 비정상적인 접근 흔적이 있는지도 같이 검토해."}
+  output: {"has_sensitive": true, "entities": [{"type": "account_id", "value": "it_admin05"}, {"type":
+  "permission", "value": "관리자 권한"}, {"type": "device_id", "value": "MFA12345"}, {"type": "backup_code",
+   "value": "백업코드"}]}
+
+
+  --- TEST #29 ---
+  prompt: {"id":"29","text":"법무팀에서 소송 관련 자료 준비 요청이 있어. 담당 변호사는 김도경(사번
+  20250912018)이고, 관련된 거래처는 넥스트에너지(주)야. 사업자등록번호는 555-12-98765이고, 세금 관련 자료가
+  필요해. 또한 계약서에 포함된 개인정보 항목(주민등록번호, 주소 등)이 적법하게 처리됐는지도 확인해달래. 해당
+   자료를 정리해서 법원 제출용 패킷으로 구성해줘."}
+  output: {"has_sensitive": true, "entities": [{"type": "name", "value": "김도경"}, {"type":
+  "employee_number", "value": "20250912018"}, {"type": "COMPANY_NAME", "value": "넥스트에너지(주)"},
+  {"type": "ID_NUMBER", "value": "555-12-98765"}, {"type": "pii_type", "value": "주민등록번호"}, {"type":
+  "pii_type", "value": "주소"}]}
+
+
+  --- TEST #30 ---
+  prompt: {"id":"30","text":"고객 확인을 위해 성명 이지훈, 생년월일 1992-07-14, 연락처 010-9876-5544, 이메일
+   jh.lee@example.com, 주소 서울 마포구 합정로 7 3층(04070) 를 입력하면 어떻게 마스킹되나요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "name", "value": "이지훈"}, {"type":
+  "date_of_birth", "value": "1992-07-14"}, {"type": "phone_number", "value": "010-9876-5544"}, {"type":
+  "email", "value": "jh.lee@example.com"}, {"type": "address", "value": "서울 마포구 합정로 7 3층(04070)"}]}
+
+
+  --- TEST #31 ---
+  prompt: {"id":"31","text":"계정ID kim.sj와 권한 role=admin, scope=repo가 있고, 최근 로그인 브라우저 Chrome
+   / IP 10.20.30.40 인데, 표준 출력 형식으로 가려서 보여줄 수 있나요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "account_id", "value": "kim.sj"}, {"type":
+  "permission", "value": "admin"}, {"type": "ip_address", "value": "10.20.30.40"}]}
+
+
+  --- TEST #32 ---
+  prompt: {"id":"32","text":"주문ID ORDER-2025-AP-44A1, 거래ID TXN-HELLO-8899, 고객번호 CUST-33021, 연락처
+  010-2244-8899가 포함된 문의는 어떤 필드가 어떻게 마스킹되나요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "order_id", "value": "ORDER-2025-AP-44A1"}, {"type":
+   "transaction_id", "value": "TXN-HELLO-8899"}, {"type": "customer_id", "value": "CUST-33021"}, {"type":
+  "phone_number", "value": "010-2244-8899"}]}
+
+
+  --- TEST #33 ---
+  prompt: {"id":"33","text":"은행 우리은행 본점, 예금주 박민정, 계좌번호 1002-123-456789, 통화 KRW, 잔액
+  ₩3,425,000 이 들어간 메시지를 안전하게 표시해줄 수 있나요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "bank_name", "value": "우리은행 본점"}, {"type":
+  "name", "value": "박민정"}, {"type": "account_number", "value": "1002-123-456789"}, {"type": "amount",
+  "value": "₩3,425,000"}]}
+
+
+  --- TEST #34 ---
+  prompt: {"id":"34","text":"결제 상세에 카드번호 5200-0000-0000-0007, 유효기간 08/28, 소유자 Kim Hana 가
+  있을 때, 어떤 규칙으로 마스킹되나요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "card_number", "value": "5200000000000007"},
+  {"type": "expiration_date", "value": "08/28"}, {"type": "name", "value": "Kim Hana"}]}
+
+
+  --- TEST #35 ---
+  prompt: {"id":"35","text":"해외결제 확인용으로 IBAN NL91ABNA0417164300, BIC ABNANL2A, 금액 EUR 250.00 을
+  넣으면 로그에 어떤 형태로 남겨야 하나요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "IBAN", "value": "NL91ABNA0417164300"}, {"type":
+  "BIC", "value": "ABNANL2A"}, {"type": "amount", "value": "EUR 250.00"}]}
+
+
+  --- TEST #36 ---
+  prompt: {"id":"36","text":"쿠폰 CP-HELLO-7722, 바우처 VC-NEW-1188, 게이트웨이 고객ID cus_FAKE8822, 송장
+  INV-2025-009911 은 어느 부분을 접미 4자리만 남기나요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "coupon_code", "value": "CP-HELLO-7722"}, {"type":
+  "voucher_code", "value": "VC-NEW-1188"}, {"type": "customer_id", "value": "cus_FAKE8822"}, {"type":
+  "invoice_number", "value": "INV-2025-009911"}]}
+
+
+  --- TEST #37 ---
+  prompt: {"id":"37","text":"고객지원 케이스에 티켓번호 TKT-OPS-4412, 환불ID REF-25-9001, 교환ID EX-25-7780,
+   청구지 대구 중구 중앙대로 55 5층 이 있을 때, 기대되는 마스킹 결과는 무엇인가요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "ticket_number", "value": "TKT-OPS-4412"}, {"type":
+  "refund_id", "value": "REF-25-9001"}, {"type": "exchange_id", "value": "EX-25-7780"}, {"type": "address",
+  "value": "대구 중구 중앙대로 55 5층"}]}
+
+
+  --- TEST #38 ---
+  prompt: {"id":"38","text":"인사 처리에서 사번 EMP-7F31, 조직명 데이터보안팀, 직무 엔지니어, 급여
+  7,200만원, 출입카드 RD-55A2 를 포함했을 때 표준 마스킹 예시를 보여줄 수 있나요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "employee_number", "value": "EMP-7F31"}, {"type":
+  "department", "value": "데이터보안팀"}, {"type": "job_title", "value": "엔지니어"}, {"type": "salary",
+  "value": "7,200만원"}, {"type": "card_id", "value": "RD-55A2"}]}
+
+
+  --- TEST #39 ---
+  prompt: {"id":"39","text":"본인확인 문구에 주민등록번호 940203-2234567, 전화 010-3355-7799, 이메일
+  soo.kang@example.com 이 포함되면 어떻게 가림처리되나요?"}
+  output: {"has_sensitive": true, "entities": [{"type": "ssn", "value": "940203-2234567"}, {"type": "phone",
+   "value": "010-3355-7799"}, {"type": "email", "value": "soo.kang@example.com"}]}
+
+
+  --- TEST #40 ---
+  prompt: {"id":"40","text":"다음 주 화요일 오전 10시에 본사 회의실에서 프로젝트 진행 상황 점검 회의가 있어.
+   참석 대상: 영업팀, 재무팀, 법무팀. 회의 안건은 '신규 파트너사 계약 조건 조율'이야. 발표 자료는 하루
+  전까지 업로드해줘."}
+  output: {"has_sensitive": false, "entities": []}
+
+
+  --- TEST #41 ---
+  prompt: {"id":"41","text":"이번 주 금요일 저녁 9시부터 자정까지 서버 정기 점검이 예정돼 있어. 대상 시스템:
+   ERP, 그룹웨어, 메일 서비스. 해당 시간 동안 서비스 접속이 제한될 수 있으니 사내 공지 부탁해."}
+  output: {"has_sensitive": false, "entities": []}
+
+
+  --- TEST #42 ---
+  prompt: {"id":"42","text":"이번 분기 영업 실적 보고서를 작성해야 해. 주요 항목: 신규 고객 수, 계약 건수,
+  매출 증감률. 부서별 실적 차트를 포함해서 다음 주 월요일까지 제출해줘."}
+  output: {"has_sensitive": false, "entities": []}
+
+
+  --- TEST #43 ---
+  prompt: {"id":"43","text":"사내 아이디어 공모전이 다음 달부터 시작돼. 참여 대상은 전 직원이고, 주제는
+  '업무 효율화 방안'이야. 수상자는 사내 포털에 공지하고, 포상은 상품권으로 지급될 예정이야."}
+  output: {"has_sensitive": false, "entities": []}
+
+
+  --- TEST #44 ---
+  prompt: {"id":"44","text":"이번 달 말에 보안 교육이 진행돼. 대상: 신규 입사자 전원. 교육 내용은 정보보호
+  기본 원칙, 비밀번호 관리, 피싱 메일 대응 방법이야. 교육 참석 여부를 이번 주 안으로 제출해줘."}
+  output: {"has_sensitive": false, "entities": []}
+
+
+  --- TEST #45 ---
+  prompt: {"id":"45","text":"지난주 금요일에 진행된 전략회의 회의록을 정리해줘. 중점 논의사항은 '해외 진출
+  전략'과 '내년도 마케팅 예산'이야. 결정된 액션 아이템을 별도 목록으로 작성해줘."}
+  output: {"has_sensitive": false, "entities": []}
+
+
+  --- TEST #46 ---
+  prompt: {"id":"46","text":"다음 달 첫째 주 금요일에 팀워크샵을 할 예정이야. 장소: 강원도 평창.
+  프로그램에는 단체 게임, 팀별 발표, 자유 토론이 포함돼 있어. 준비물과 일정표를 이번 주까지 공유해줘."}
+  output: {"has_sensitive": false, "entities": []}
+
+
+  --- TEST #47 ---
+  prompt: {"id":"47","text":"사내 근무 환경 개선 설문 조사를 진행할 계획이야. 주요 항목: 재택근무 만족도,
+  사내 복지 만족도, 부서 간 협업 효율성. 익명으로 진행되니 솔직하게 작성할 수 있도록 안내해줘."}
+  output: {"has_sensitive": false, "entities": []}
+
+
+  --- TEST #48 ---
+  prompt: {"id":"48","text":"다음 주 수요일 오전 11시에 신규 프로젝트 브리핑이 있어. 참석 대상: 연구개발팀,
+  품질관리팀. 발표 내용은 프로젝트 목표, 일정, 예상 리스크 관리 방안이야. 회의 후 질의응답 시간도 마련해."}
+  output: {"has_sensitive": false, "entities": []}
+
+
+  --- TEST #49 ---
+  prompt: {"id":"49","text":"사내 게시판에 새로운 카테고리가 추가됐어. '아이디어 제안', '칭찬 릴레이', '자유
+   게시판'을 신설했으니, 직원들이 자유롭게 의견을 남길 수 있도록 홍보해줘."}
+  output: {"has_sensitive": false, "entities": []}
+
+
+  --- TEST #50 ---
+  prompt: {"id":"50","text":"이 메시지에 민감정보가 있나요? OpenAI API 키 sk-EXAMPLEFAKEKEY1234567890abcd,
+  GitHub PAT ghp_EXAMPLEExampleExampleExample1234, Slack 토큰 xoxb-12345-EXAMPLE-abcdefghijkl 이 포함돼요."}
+  output: {"has_sensitive": true, "entities": [{"type": "APIKey", "value":
+  "sk-EXAMPLEFAKEKEY1234567890abcd"}, {"type": "APIKey", "value": "ghp_EXAMPLEExampleExampleExample1234"},
+  {"type": "APIToken", "value": "xoxb-12345-EXAMPLE-abcdefghijkl"}]}
