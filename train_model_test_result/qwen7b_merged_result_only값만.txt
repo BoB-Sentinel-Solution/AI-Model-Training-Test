@@ -1,0 +1,549 @@
+--- TEST #1 ---
+prompt: ORDER-25-0912-ABCD-7788, 김민서, 010-1234-5678, minseo.kim@example.com, 서울 강남구 테헤란로 12 5층(06234)
+ttft_ms: 49.91 | tok/s: 3.42 | total_ms: 78889.09
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+ORDER-25-0912-ABCD-7788, 김민서, 010-1234-5678, minseo.kim@example.com, 서울 강남구 테헤란로 12 5층(06234)
+assistant
+{"has_sensitive": true, "entities": [{"type": "Order ID", "value": "ORDER-25-0912-ABCD-7788"}, {"type": "Full Name", "value": "김민서"}, {"type": "Phone Number", "value": "010-1234-5678"}, {"type": "Email", "value": "minseo.kim@example.com"}, {"type": "Address", "value": "서울 강남구 테헤란로 12 5층(06234)"}]}
+parsed_json: None
+
+--- TEST #2 ---
+prompt: ms.park, SuperSecret!234, ABCD-EFGH-IJKL-MNOP, 192.168.10.45
+ttft_ms: 1.50 | tok/s: 3.77 | total_ms: 52992.77
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+ms.park, SuperSecret!234, ABCD-EFGH-IJKL-MNOP, 192.168.10.45
+assistant
+{"has_sensitive": true, "entities": [{"type": "username", "value": "ms.park"}, {"type": "password", "value": "SuperSecret!234"}, {"type": "credit_card_number", "value": "ABCD-EFGH-IJKL-MNOP"}, {"type": "ip_address", "value": "192.168.10.45"}]}
+parsed_json: None
+
+--- TEST #3 ---
+prompt: sk-EXAMPLEFAKEKEY1234567890abcd, ghp_EXAMPLEExample1234, xoxb-12345-EXAMPLE-abcdefghijkl
+ttft_ms: 1.31 | tok/s: 3.84 | total_ms: 53617.75
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+sk-EXAMPLEFAKEKEY1234567890abcd, ghp_EXAMPLEExample1234, xoxb-12345-EXAMPLE-abcdefghijkl
+assistant
+{"has_sensitive": true, "entities": [{"type": "GitHub Personal Access Token", "value": "ghp_EXAMPLEExample1234"}, {"type": "GitHub Personal Access Token", "value": "sk-EXAMPLEFAKEKEY1234567890abcd"}, {"type": "GitHub Installation ID", "value": "xoxb-12345-EXAMPLE-abcdefghijkl"}]}
+parsed_json: None
+
+--- TEST #4 ---
+prompt: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.EXAMPLE.zzZEXAMPLE, eyJraWQiOiJLT0RFIiJ9.EXAMPLE.SIGN
+ttft_ms: 1.44 | tok/s: 4.29 | total_ms: 46900.81
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.EXAMPLE.zzZEXAMPLE, eyJraWQiOiJLT0RFIiJ9.EXAMPLE.SIGN
+assistant
+{"has_sensitive": true, "entities": [{"type": "token", "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.EXAMPLE.zzZEXAMPLE"}, {"type": "token", "value": "eyJraWQiOiJLT0RFIiJ9.EXAMPLE.SIGN"}]}
+parsed_json: None
+
+--- TEST #5 ---
+prompt: DE89370400440532013000, DEUTDEFF, Hans Müller, EUR 1,250.00
+ttft_ms: 1.72 | tok/s: 4.20 | total_ms: 44766.08
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+DE89370400440532013000, DEUTDEFF, Hans Müller, EUR 1,250.00
+assistant
+{"has_sensitive": true, "entities": [{"type": "IBAN", "value": "DE89370400440532013000"}, {"type": "Bank Name", "value": "DEUTDEFF"}, {"type": "Name", "value": "Hans Müller"}]}
+parsed_json: None
+
+--- TEST #6 ---
+prompt: EMP-00912, 박지훈, 900101-1234567, 영업부
+ttft_ms: 1.46 | tok/s: 6.65 | total_ms: 21343.49
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+EMP-00912, 박지훈, 900101-1234567, 영업부
+assistant
+{"has_sensitive": true, "entities": [{"type": "ID", "value": "900101-1234567"}]}
+parsed_json: None
+
+--- TEST #7 ---
+prompt: 123-45-67890, 주식회사 알파, 김은정
+ttft_ms: 1.57 | tok/s: 4.18 | total_ms: 38487.05
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+123-45-67890, 주식회사 알파, 김은정
+assistant
+{"has_sensitive": true, "entities": [{"type": "SSN", "value": "123-45-67890"}, {"type": "Company", "value": "주식회사 알파"}, {"type": "Name", "value": "김은정"}]}
+parsed_json: None
+
+--- TEST #8 ---
+prompt: lee.admin, 10.20.30.40, 2025-09-15 10:22:33
+ttft_ms: 1.69 | tok/s: 17.17 | total_ms: 7106.72
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+lee.admin, 10.20.30.40, 2025-09-15 10:22:33
+assistant
+{"has_sensitive": false, "entities": []}
+parsed_json: None
+
+--- TEST #9 ---
+prompt: user@example.com, alt@example.org, +82-10-9876-5432
+ttft_ms: 1.47 | tok/s: 4.24 | total_ms: 38482.53
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+user@example.com, alt@example.org, +82-10-9876-5432
+assistant
+{"has_sensitive": false, "entities": [{"type": "email", "value": "user@example.com"}, {"type": "email", "value": "alt@example.org"}, {"type": "phone", "value": "+82-10-9876-5432"}]}
+parsed_json: None
+
+--- TEST #10 ---
+prompt: CT-2025-0915-XYZ
+ttft_ms: 1.52 | tok/s: 14.06 | total_ms: 7042.23
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+CT-2025-0915-XYZ
+assistant
+{"has_sensitive": false, "entities": []}
+parsed_json: None
+
+--- TEST #11 ---
+prompt: INV-887766, LG Electronics, KRW 5,400,000
+ttft_ms: 1.54 | tok/s: 15.46 | total_ms: 7115.58
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+INV-887766, LG Electronics, KRW 5,400,000
+assistant
+{"has_sensitive": false, "entities": []}
+parsed_json: None
+
+--- TEST #12 ---
+prompt: db.internal.local, sa, P@ssw0rd2025!
+ttft_ms: 1.45 | tok/s: 6.33 | total_ms: 19441.07
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+db.internal.local, sa, P@ssw0rd2025!
+assistant
+{"has_sensitive": true, "entities": [{"type": "password", "value": "P@ssw0rd2025!"}]}
+parsed_json: None
+
+--- TEST #13 ---
+prompt: glpat-EXAMPLE1234567890
+ttft_ms: 1.54 | tok/s: 5.45 | total_ms: 23467.53
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+glpat-EXAMPLE1234567890
+assistant
+{"has_sensitive": true, "entities": [{"type": "gitlab personal access token", "value": "glpat-EXAMPLE1234567890"}]}
+parsed_json: None
+
+--- TEST #14 ---
+prompt: drv-998877, Confidential_Report.pdf
+ttft_ms: 1.69 | tok/s: 13.79 | total_ms: 7106.80
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+drv-998877, Confidential_Report.pdf
+assistant
+{"has_sensitive": false, "entities": []}
+parsed_json: None
+
+--- TEST #15 ---
+prompt: yoon_choi, '회의 2025/09/20 14:00', EXAMPLETOKEN
+ttft_ms: 1.45 | tok/s: 16.11 | total_ms: 7078.94
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+yoon_choi, '회의 2025/09/20 14:00', EXAMPLETOKEN
+assistant
+{"has_sensitive": false, "entities": []}
+parsed_json: None
+
+--- TEST #16 ---
+prompt: CUST-002931, CRM-7F2A-11EE-BC12, 010-2233-4455
+ttft_ms: 1.54 | tok/s: 4.01 | total_ms: 48861.33
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+CUST-002931, CRM-7F2A-11EE-BC12, 010-2233-4455
+assistant
+{"has_sensitive": true, "entities": [{"type": "Customer ID", "value": "CUST-002931"}, {"type": "License Plate", "value": "CRM-7F2A-11EE-BC12"}, {"type": "Phone Number", "value": "010-2233-4455"}]}
+parsed_json: None
+
+--- TEST #17 ---
+prompt: INV-2025-000123, 부산 해운대구 A로 77 1203호, cus_FAKE12345
+ttft_ms: 1.48 | tok/s: 4.01 | total_ms: 49401.47
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+INV-2025-000123, 부산 해운대구 A로 77 1203호, cus_FAKE12345
+assistant
+{"has_sensitive": true, "entities": [{"type": "invoice_number", "value": "INV-2025-000123"}, {"type": "address", "value": "부산 해운대구 A로 77 1203호"}, {"type": "customer_id", "value": "cus_FAKE12345"}]}
+parsed_json: None
+
+--- TEST #18 ---
+prompt: park.min@example.com, 556677
+ttft_ms: 1.51 | tok/s: 5.00 | total_ms: 25980.67
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+park.min@example.com, 556677
+assistant
+{"has_sensitive": true, "entities": [{"type": "email", "value": "park.min@example.com"}, {"type": "phone_number", "value": "556677"}]}
+parsed_json: None
+
+--- TEST #19 ---
+prompt: EMP-7733, 이영호, KRW 4,200,000, 100-222-333444
+ttft_ms: 1.53 | tok/s: 3.81 | total_ms: 53538.20
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+EMP-7733, 이영호, KRW 4,200,000, 100-222-333444
+assistant
+{"has_sensitive": true, "entities": [{"type": "ID", "value": "EMP-7733"}, {"type": "Name", "value": "이영호"}, {"type": "CurrencyAmount", "value": "KRW 4,200,000"}, {"type": "Phone", "value": "100-222-333444"}]}
+parsed_json: None
+
+--- TEST #20 ---
+prompt: PRJ-56789, 김지후
+ttft_ms: 1.53 | tok/s: 4.93 | total_ms: 26579.13
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+PRJ-56789, 김지후
+assistant
+{"has_sensitive": true, "entities": [{"type": "Project ID", "value": "PRJ-56789"}, {"type": "Name", "value": "김지후"}]}
+parsed_json: None
+
+--- TEST #21 ---
+prompt: 김민아, 920505-2345678
+ttft_ms: 1.50 | tok/s: 4.93 | total_ms: 28807.13
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+김민아, 920505-2345678
+assistant
+{"has_sensitive": true, "entities": [{"type": "date_of_birth", "value": "920505"}, {"type": "ssn", "value": "2345678"}]}
+parsed_json: None
+
+--- TEST #22 ---
+prompt: AIzaSyEXAMPLE1234
+ttft_ms: 1.47 | tok/s: 6.09 | total_ms: 18541.77
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+AIzaSyEXAMPLE1234
+assistant
+{"has_sensitive": true, "entities": [{"type": "API Key", "value": "AIzaSyEXAMPLE1234"}]}
+parsed_json: None
+
+--- TEST #23 ---
+prompt: 5555 4444 3333 2222
+ttft_ms: 1.65 | tok/s: 5.37 | total_ms: 25311.09
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+5555 4444 3333 2222
+assistant
+{"has_sensitive": true, "entities": [{"type": "credit card number", "value": "5555 4444 3333 2222"}]}
+parsed_json: None
+
+--- TEST #24 ---
+prompt: sessionid=s%3AEXAMPLE.SIG.
+ttft_ms: 1.54 | tok/s: 6.31 | total_ms: 17755.57
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+sessionid=s%3AEXAMPLE.SIG.
+assistant
+{"has_sensitive": true, "entities": [{"type": "sessionid", "value": "s%3AEXAMPLE.SIG."}]}
+parsed_json: None
+
+--- TEST #25 ---
+prompt: StrongPass2025!
+ttft_ms: 1.51 | tok/s: 6.36 | total_ms: 17139.59
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+StrongPass2025!
+assistant
+{"has_sensitive": true, "entities": [{"type": "password", "value": "StrongPass2025!"}]}
+parsed_json: None
+
+--- TEST #26 ---
+prompt: ORD-2025-5555, 이나래, 010-1122-3344
+ttft_ms: 1.39 | tok/s: 4.12 | total_ms: 42695.75
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+ORD-2025-5555, 이나래, 010-1122-3344
+assistant
+{"has_sensitive": true, "entities": [{"type": "Order ID", "value": "ORD-2025-5555"}, {"type": "Name", "value": "이나래"}, {"type": "Phone Number", "value": "010-1122-3344"}]}
+parsed_json: None
+
+--- TEST #27 ---
+prompt: sales_admin, 00Dxx0000001gPz!AQ4AQFakeToken
+ttft_ms: 1.71 | tok/s: 4.62 | total_ms: 33587.21
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+sales_admin, 00Dxx0000001gPz!AQ4AQFakeToken
+assistant
+{"has_sensitive": true, "entities": [{"type": "User ID", "value": "sales_admin"}, {"type": "Access Token", "value": "00Dxx0000001gPz!AQ4AQFakeToken"}]}
+parsed_json: None
+
+--- TEST #28 ---
+prompt: CP-2025-7788, cust_8899, KRW 20,000
+ttft_ms: 1.46 | tok/s: 5.11 | total_ms: 29743.96
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+CP-2025-7788, cust_8899, KRW 20,000
+assistant
+{"has_sensitive": true, "entities": [{"type": "customer id", "value": "cust_8899"}, {"type": "currency amount", "value": "KRW 20,000"}]}
+parsed_json: None
+
+--- TEST #29 ---
+prompt: PRT-2025-88, Beta Solutions, USD 120,000
+ttft_ms: 1.48 | tok/s: 14.95 | total_ms: 7293.30
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+PRT-2025-88, Beta Solutions, USD 120,000
+assistant
+{"has_sensitive": false, "entities": []}
+parsed_json: None
+
+--- TEST #30 ---
+prompt: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX
+ttft_ms: 1.71 | tok/s: 4.99 | total_ms: 31088.87
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX
+assistant
+{"has_sensitive": true, "entities": [{"type": "slack hook", "value": "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"}]}
+parsed_json: None
+
+--- TEST #31 ---
+prompt: EMP-2025-123, 한지원, 재무팀, 023-456-7890
+ttft_ms: 1.47 | tok/s: 4.32 | total_ms: 40057.89
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+EMP-2025-123, 한지원, 재무팀, 023-456-7890
+assistant
+{"has_sensitive": true, "entities": [{"type": "ID", "value": "EMP-2025-123"}, {"type": "Name", "value": "한지원"}, {"type": "Phone", "value": "023-456-7890"}]}
+parsed_json: None
+
+--- TEST #32 ---
+prompt: PT-777, 최유리, INS-889977, Hypertension
+ttft_ms: 1.46 | tok/s: 15.18 | total_ms: 7118.19
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+PT-777, 최유리, INS-889977, Hypertension
+assistant
+{"has_sensitive": false, "entities": []}
+parsed_json: None
+
+--- TEST #33 ---
+prompt: ceo@company.com, cfo@company.com, M&A Plan, secret.xlsx
+ttft_ms: 1.42 | tok/s: 4.50 | total_ms: 32911.67
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+ceo@company.com, cfo@company.com, M&A Plan, secret.xlsx
+assistant
+{"has_sensitive": true, "entities": [{"type": "email", "value": "ceo@company.com"}, {"type": "email", "value": "cfo@company.com"}, {"type": "filename", "value": "secret.xlsx"}]}
+parsed_json: None
+
+--- TEST #34 ---
+prompt: CARD-991122, 장수빈, 2025-09-14 09:05:00
+ttft_ms: 1.86 | tok/s: 4.16 | total_ms: 43563.13
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+CARD-991122, 장수빈, 2025-09-14 09:05:00
+assistant
+{"has_sensitive": true, "entities": [{"type": "ID", "value": "CARD-991122"}, {"type": "name", "value": "장수빈"}, {"type": "date", "value": "2025-09-14 09:05:00"}]}
+parsed_json: None
+
+--- TEST #35 ---
+prompt: db-password, P@ssExample123
+ttft_ms: 1.71 | tok/s: 5.09 | total_ms: 24746.91
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+db-password, P@ssExample123
+assistant
+{"has_sensitive": true, "entities": [{"type": "password", "value": "db-password"}, {"type": "password", "value": "P@ssExample123"}]}
+parsed_json: None
+
+--- TEST #36 ---
+prompt: 부산 해운대구 A로 77, KRW 1,980,000
+ttft_ms: 1.52 | tok/s: 15.29 | total_ms: 7197.27
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+부산 해운대구 A로 77, KRW 1,980,000
+assistant
+{"has_sensitive": false, "entities": []}
+parsed_json: None
+
+--- TEST #37 ---
+prompt: csrftoken=xyz123, XSRF-TOKEN=EXAMPLETOKEN123
+ttft_ms: 1.53 | tok/s: 14.78 | total_ms: 7172.03
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+csrftoken=xyz123, XSRF-TOKEN=EXAMPLETOKEN123
+assistant
+{"has_sensitive": false, "entities": []}
+parsed_json: None
+
+--- TEST #38 ---
+prompt: DOCKER_PASSWORD, ExAmpl3D0ckerP@ss
+ttft_ms: 1.38 | tok/s: 4.91 | total_ms: 26905.17
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+DOCKER_PASSWORD, ExAmpl3D0ckerP@ss
+assistant
+{"has_sensitive": true, "entities": [{"type": "password", "value": "DOCKER_PASSWORD"}, {"type": "password", "value": "ExAmpl3D0ckerP@ss"}]}
+parsed_json: None
+
+--- TEST #39 ---
+prompt: TX-112233, 5555 4444 3333 2222, USD 99.99
+ttft_ms: 1.55 | tok/s: 4.67 | total_ms: 37073.12
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+TX-112233, 5555 4444 3333 2222, USD 99.99
+assistant
+{"has_sensitive": true, "entities": [{"type": "credit card", "value": "5555 4444 3333 2222"}, {"type": "ssn", "value": "TX-112233"}]}
+parsed_json: None
+
+--- TEST #40 ---
+prompt: root, 192.168.1.100, -----BEGIN OPENSSH PRIVATE KEY-----FAKEKEY-----END OPENSSH PRIVATE KEY-----
+ttft_ms: 1.73 | tok/s: 4.49 | total_ms: 38116.55
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+root, 192.168.1.100, -----BEGIN OPENSSH PRIVATE KEY-----FAKEKEY-----END OPENSSH PRIVATE KEY-----
+assistant
+{"has_sensitive": true, "entities": [{"type": "IP", "value": "192.168.1.100"}, {"type": "Private Key", "value": "-----BEGIN OPENSSH PRIVATE KEY-----FAKEKEY-----END OPENSSH PRIVATE KEY-----"}]}
+parsed_json: None
+
+--- TEST #41 ---
+prompt: 김민수, 110-222-333444, minsu@example.com
+ttft_ms: 1.48 | tok/s: 4.16 | total_ms: 39150.00
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+김민수, 110-222-333444, minsu@example.com
+assistant
+{"has_sensitive": true, "entities": [{"type": "name", "value": "김민수"}, {"type": "phone", "value": "110-222-333444"}, {"type": "email", "value": "minsu@example.com"}]}
+parsed_json: None
+
+--- TEST #42 ---
+prompt: CUST-8899, 010-4455-6677, 서울시 강남구
+ttft_ms: 1.38 | tok/s: 4.08 | total_ms: 42678.35
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+CUST-8899, 010-4455-6677, 서울시 강남구
+assistant
+{"has_sensitive": true, "entities": [{"type": "customer id", "value": "CUST-8899"}, {"type": "phone number", "value": "010-4455-6677"}, {"type": "address", "value": "서울시 강남구"}]}
+parsed_json: None
+
+--- TEST #43 ---
+prompt: 950101-1234567
+ttft_ms: 1.47 | tok/s: 5.68 | total_ms: 22008.14
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+950101-1234567
+assistant
+{"has_sensitive": true, "entities": [{"type": "SSN", "value": "950101-1234567"}]}
+parsed_json: None
+
+--- TEST #44 ---
+prompt: AKIAEXAMPLE, abc123xyz456
+ttft_ms: 1.59 | tok/s: 4.70 | total_ms: 28512.67
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+AKIAEXAMPLE, abc123xyz456
+assistant
+{"has_sensitive": true, "entities": [{"type": "Access Key ID", "value": "AKIAEXAMPLE"}, {"type": "Hashed Password", "value": "abc123xyz456"}]}
+parsed_json: None
+
+--- TEST #45 ---
+prompt: AIzaSyFakeKey123, pk.EXAMPLEKEY
+ttft_ms: 1.56 | tok/s: 4.79 | total_ms: 27968.17
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+AIzaSyFakeKey123, pk.EXAMPLEKEY
+assistant
+{"has_sensitive": true, "entities": [{"type": "API Key", "value": "AIzaSyFakeKey123"}, {"type": "API Key", "value": "pk.EXAMPLEKEY"}]}
+parsed_json: None
+
+--- TEST #46 ---
+prompt: ORDER-9988, 010-5566-7788
+ttft_ms: 2.08 | tok/s: 6.24 | total_ms: 20847.72
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+ORDER-9988, 010-5566-7788
+assistant
+{"has_sensitive": true, "entities": [{"type": "phone", "value": "010-5566-7788"}]}
+parsed_json: None
+
+--- TEST #47 ---
+prompt: P-9981, 이지은, 45, Hypertension
+ttft_ms: 1.47 | tok/s: 4.49 | total_ms: 32755.20
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+P-9981, 이지은, 45, Hypertension
+assistant
+{"has_sensitive": true, "entities": [{"type": "ID", "value": "P-9981"}, {"type": "name", "value": "이지은"}, {"type": "age", "value": "45"}]}
+parsed_json: None
+
+--- TEST #48 ---
+prompt: 192.168.77.10, abcdef12345
+ttft_ms: 1.52 | tok/s: 14.49 | total_ms: 7388.07
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+192.168.77.10, abcdef12345
+assistant
+{"has_sensitive": false, "entities": []}
+parsed_json: None
+
+--- TEST #49 ---
+prompt: alice@company.com, bob@partner.org
+ttft_ms: 1.34 | tok/s: 5.08 | total_ms: 24433.70
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+alice@company.com, bob@partner.org
+assistant
+{"has_sensitive": true, "entities": [{"type": "email", "value": "alice@company.com"}, {"type": "email", "value": "bob@partner.org"}]}
+parsed_json: None
+
+--- TEST #50 ---
+prompt: 4444 3333 2222 1111, 987, 09/27
+ttft_ms: 1.68 | tok/s: 4.06 | total_ms: 44333.55
+output: system
+You are a strict detector for sensitive entities (PII and secrets). Given the user's text, return ONLY a compact JSON with keys: `has_sensitive` (true/false) and `entities` (list of objects with `type` and `value`). If none, return {"has_sensitive": false, "entities": []}.
+user
+4444 3333 2222 1111, 987, 09/27
+assistant
+{"has_sensitive": true, "entities": [{"type": "credit_card", "value": "4444 3333 2222 1111"}, {"type": "social_security_number", "value": "987"}, {"type": "expiration_date", "value": "09/27"}]}
+parsed_json: None
