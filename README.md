@@ -64,7 +64,7 @@ python train_model_test.py --model_dir runs/qwen3b_sft_merged
 ---
 ## 학습한 모델 퍼포먼스 테스트(임시)
 ```
-python3 /mnt/data/ai_perf_infer_eval_ko.py \
+python3 model_performance_test.py \
   --prompts "AI performance test id_prompt.jsonl" \
   --answers "AI performance test id_answer.jsonl" \
   --model "runs/qwen3b_sft_merged" \
