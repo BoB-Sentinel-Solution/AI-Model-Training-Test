@@ -5,7 +5,7 @@ import json
 import time
 import threading
 import re
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
@@ -79,32 +79,28 @@ def sanitize_text(s: str) -> str:
              .replace("\u2029", "\n")
              .replace("\ufeff", "")).strip()
 
-def strip_role_headers(s: str) -> str:
-    """앞뒤에 섞인 role 라벨(system/user/assistant)을 순하게 제거"""
+def strip_role_headers_shallow(s: str) -> str:
+    """앞쪽의 단일 role 라벨(system/user/assistant)만 정리 (과도 제거 방지)"""
     s = s.lstrip()
     for prefix in ("system\n", "user\n", "assistant\n"):
         if s.startswith(prefix):
             s = s[len(prefix):].lstrip()
-    # 말미에 단독 라벨이 남은 경우 제거
-    s = re.sub(r"(?:\n|^)(system|user|assistant)\s*$", "", s, flags=re.IGNORECASE)
-    return s.strip()
+    return s
 
-def extract_top_level_json(s: str) -> Optional[str]:
-    """코드펜스 우선, 실패 시 중괄호 레벨 카운팅으로 최상위 JSON 블록 추출"""
-    s = sanitize_text(strip_role_headers(s))
-    # 1) 코드펜스 안 JSON 우선
-    m = CODE_FENCE_RE.search(s)
-    if m:
-        return m.group(1).strip()
-    # 2) 최상위 { ... } 균형 찾기
+def find_codefence_json_blocks(s: str) -> List[str]:
+    return [m.group(1).strip() for m in CODE_FENCE_RE.finditer(s)]
+
+def find_all_top_level_json_blocks(s: str) -> List[str]:
+    """문자열 내 최상위 { ... } 블록을 '모두' 수집 (문자열/이스케이프 인식)"""
+    blocks = []
     first = s.find("{")
     if first == -1:
-        return None
+        return blocks
     level = 0
     in_str = False
     esc = False
-    for i in range(first, len(s)):
-        ch = s[i]
+    start_idx = None
+    for i, ch in enumerate(s):
         if in_str:
             if esc:
                 esc = False
@@ -118,12 +114,59 @@ def extract_top_level_json(s: str) -> Optional[str]:
                 in_str = True
                 continue
             if ch == "{":
+                if level == 0:
+                    start_idx = i
                 level += 1
             elif ch == "}":
                 level -= 1
+                if level == 0 and start_idx is not None:
+                    blocks.append(s[start_idx:i+1].strip())
+                    start_idx = None
+    return blocks
+
+def find_last_top_level_json_backward(s: str) -> Optional[str]:
+    """마지막 '}'부터 역방향으로 매칭해 마지막 최상위 JSON 블록을 복원 (백업용)"""
+    end = s.rfind("}")
+    if end == -1:
+        return None
+    level = 0
+    in_str = False
+    esc = False
+    for i in range(end, -1, -1):
+        ch = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        else:
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "}":
+                level += 1
+            elif ch == "{":
+                level -= 1
                 if level == 0:
-                    return s[first:i+1].strip()
+                    return s[i:end+1].strip()
     return None
+
+def extract_best_json(s: str) -> Optional[str]:
+    """우선순위: (1) 코드펜스 '마지막' → (2) 평문 블록 '마지막' → (3) 역방향 매칭"""
+    s = sanitize_text(strip_role_headers_shallow(s))
+    # 1) 코드펜스 내 JSON들 중 가장 마지막
+    cf = find_codefence_json_blocks(s)
+    if cf:
+        return cf[-1]
+    # 2) 평문 내 모든 최상위 블록 수집 후 마지막
+    blocks = find_all_top_level_json_blocks(s)
+    if blocks:
+        return blocks[-1]
+    # 3) 역방향 백업
+    return find_last_top_level_json_backward(s)
 
 # --------- 추론 1회 ---------
 def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, Any]:
@@ -196,11 +239,11 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
         if duration_gen > 0:
             tok_s = gen_tokens / duration_gen
 
-    # JSON 파싱 (후처리 시간 측정)
+    # JSON 파싱 (후처리 시간 측정) — 마지막 블록 우선
     post0 = time.perf_counter()
     parsed = None
     try:
-        candidate = extract_top_level_json(raw_out)
+        candidate = extract_best_json(raw_out)
         if candidate:
             parsed = json.loads(candidate)
     except Exception:
@@ -249,24 +292,13 @@ def main():
         print("output:", r["raw"])
         print("parsed_json:", json.dumps(r["json"], ensure_ascii=False) if r["json"] is not None else "None")
 
-        # ↓↓↓ 요청사항: parsed_json 이후에 줄바꿈하고 시간 정보를 가시성 좋게 출력 ↓↓↓
-        print(
-            "\n"
-            "[Timing]\n"
-            f"  준비시간(prep_ms): {r.get('prep_ms'):.2f}" if r.get("prep_ms") is not None else "  준비시간(prep_ms): NA"
-        )
-        print(
-            f"  인코딩시간(encode_ms): {r.get('encode_ms'):.2f}" if r.get("encode_ms") is not None else "  인코딩시간(encode_ms): NA"
-        )
-        print(
-            f"  GPU전송시간(h2d_ms): {r.get('h2d_ms'):.2f}" if r.get("h2d_ms") is not None else "  GPU전송시간(h2d_ms): NA"
-        )
-        print(
-            f"  첫토큰대기(TTFT, ttft_ms): {r['ttft_ms']:.2f}" if r.get("ttft_ms") is not None else "  첫토큰대기(TTFT, ttft_ms): NA"
-        )
-        print(
-            f"  생성속도(tok/s): {r['tok_s']:.2f}" if r.get("tok_s") is not None else "  생성속도(tok/s): NA"
-        )
+        # parsed_json 이후, 가독성 좋은 타이밍 블록
+        print("\n[Timing]")
+        print(f"  준비시간(prep_ms): {r.get('prep_ms'):.2f}" if r.get("prep_ms") is not None else "  준비시간(prep_ms): NA")
+        print(f"  인코딩시간(encode_ms): {r.get('encode_ms'):.2f}" if r.get("encode_ms") is not None else "  인코딩시간(encode_ms): NA")
+        print(f"  GPU전송시간(h2d_ms): {r.get('h2d_ms'):.2f}" if r.get("h2d_ms") is not None else "  GPU전송시간(h2d_ms): NA")
+        print(f"  첫토큰대기(TTFT, ttft_ms): {r['ttft_ms']:.2f}" if r.get("ttft_ms") is not None else "  첫토큰대기(TTFT, ttft_ms): NA")
+        print(f"  생성속도(tok/s): {r['tok_s']:.2f}" if r.get("tok_s") is not None else "  생성속도(tok/s): NA")
         print(f"  생성전체시간(total_ms): {total_ms:.2f}")
         print(f"  후처리시간(post_ms): {post_ms:.2f}")
         print(f"  전체응답시간(e2e_ms): {e2e_ms:.2f}")
