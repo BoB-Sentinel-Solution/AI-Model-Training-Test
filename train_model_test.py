@@ -66,13 +66,27 @@ DEFAULT_PROMPTS = [
 ]
 
 def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, Any]:
+    import time, json, threading
+    from typing import Optional
+
+    t0 = time.perf_counter()  # ← 함수 진입 시각
+
     messages = [
         {"role": "system", "content": SYS_PROMPT},
         {"role": "user", "content": prompt}
     ]
-    inputs = tok.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True)
-    inputs = inputs.to(model.device)
 
+    # 토크나이즈 + 템플릿 적용 (인코딩 시간 포함)
+    t_enc0 = time.perf_counter()
+    inputs = tok.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True)
+    t_enc1 = time.perf_counter()
+
+    # 디바이스로 이동
+    t_h2d0 = time.perf_counter()
+    inputs = inputs.to(model.device)
+    t_h2d1 = time.perf_counter()
+
+    # 스트리머/생성 인자 준비
     streamer = TextIteratorStreamer(tok, skip_special_tokens=True, decode_kwargs={"skip_special_tokens": True})
     gen_kwargs = dict(
         inputs=inputs,
@@ -82,17 +96,22 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
         streamer=streamer,
     )
 
-    # run generate on a background thread to use the streamer
+    # 여기까지가 프롬프트 준비 시간
+    start = time.perf_counter()  # ← generate 직전(= prep 끝)
+    prep_ms = (start - t0) * 1000.0
+    encode_ms = (t_enc1 - t_enc0) * 1000.0
+    h2d_ms = (t_h2d1 - t_h2d0) * 1000.0
+
+    # 스트리밍 소비자
     first_token_time: Optional[float] = None
     raw_chunks = []
-    start = time.perf_counter()
 
     def _consume():
         nonlocal first_token_time
-        for i, token_text in enumerate(streamer):
+        for _tok in streamer:
             if first_token_time is None:
                 first_token_time = time.perf_counter()
-            raw_chunks.append(token_text)
+            raw_chunks.append(_tok)
 
     t = threading.Thread(target=_consume)
     t.start()
@@ -104,11 +123,10 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
     end = time.perf_counter()
 
     raw_out = "".join(raw_chunks).strip()
-    total_ms = (end - start) * 1000.0
-    ttft_ms = (first_token_time - start) * 1000.0 if first_token_time else None
+    total_ms = (end - start) * 1000.0                    # generate 시작→완료
+    ttft_ms = (first_token_time - start) * 1000.0 if first_token_time else None  # 첫 토큰까지
 
-    # token/s 계산 (생성 토큰 기준)
-    # 입력/출력 토큰 길이 측정
+    # 생성 토큰 수/토큰속도
     out_ids = tok(raw_out, return_tensors="pt")["input_ids"][0]
     gen_tokens = out_ids.size(0)
     tok_s = None
@@ -117,23 +135,21 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
         if duration_gen > 0:
             tok_s = gen_tokens / duration_gen
 
-    # JSON 파싱 시도
+    # JSON 파싱
     parsed = None
     try:
-        # 모델이 앞말 덧붙였을 수 있으니 중괄호 첫/끝 구간만 salvage
         s = raw_out
-        l = s.find("{")
-        r = s.rfind("}")
-        if l != -1 and r != -1 and r > l:
-            parsed = json.loads(s[l:r+1])
-        else:
-            parsed = json.loads(s)  # 혹시 순수 JSON이면
+        l, r = s.find("{"), s.rfind("}")
+        parsed = json.loads(s[l:r+1] if (l != -1 and r != -1 and r > l) else s)
     except Exception:
         parsed = None
 
     return {
         "raw": raw_out,
         "json": parsed,
+        "prep_ms": prep_ms,        # ★ 추가
+        "encode_ms": encode_ms,    # (참고) 토크나이즈/템플릿
+        "h2d_ms": h2d_ms,          # (참고) 호스트→디바이스 복사
         "ttft_ms": ttft_ms,
         "total_ms": total_ms,
         "tok_s": tok_s
@@ -157,9 +173,13 @@ def main():
         r = infer_once(tok, model, p, max_new_tokens=args.max_new_tokens)
         print(f"\n--- TEST #{i} ---")
         print("prompt:", p)
+        # ▼ prep_ms/encode_ms/h2d_ms/ttft_ms/tok_s/total_ms 표기
         print(
-            "ttft_ms:", f"{r['ttft_ms']:.2f}" if r['ttft_ms'] else "NA",
-            "| tok/s:", f"{r['tok_s']:.2f}" if r['tok_s'] else "NA",
+            "prep_ms:", f"{r.get('prep_ms', float('nan')):.2f}",
+            "| encode_ms:", f"{r.get('encode_ms', float('nan')):.2f}",
+            "| h2d_ms:", f"{r.get('h2d_ms', float('nan')):.2f}",
+            "| ttft_ms:", f"{r['ttft_ms']:.2f}" if r.get('ttft_ms') is not None else "NA",
+            "| tok/s:", f"{r['tok_s']:.2f}" if r.get('tok_s') is not None else "NA",
             "| total_ms:", f"{r['total_ms']:.2f}"
         )
         print("output:", r["raw"])
@@ -167,3 +187,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
