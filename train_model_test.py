@@ -246,19 +246,30 @@ def main():
 
         print(f"\n--- TEST #{i} ---")
         print("prompt:", p)
-        print(
-            "준비시간(prep_ms):", f"{r.get('prep_ms'):.2f}" if r.get("prep_ms") is not None else "NA",
-            "| 인코딩시간(encode_ms):", f"{r.get('encode_ms'):.2f}" if r.get("encode_ms") is not None else "NA",
-            "| GPU전송시간(h2d_ms):", f"{r.get('h2d_ms'):.2f}" if r.get("h2d_ms") is not None else "NA",
-            "| 첫토큰대기(TTFT, ttft_ms):", f"{r['ttft_ms']:.2f}" if r.get('ttft_ms') is not None else "NA",
-            "| 생성속도(tok/s):", f"{r['tok_s']:.2f}" if r.get('tok_s') is not None else "NA",
-            "| 생성전체시간(total_ms):", f"{total_ms:.2f}",
-            "| 후처리시간(post_ms):", f"{post_ms:.2f}",
-            "| 전체응답시간(e2e_ms):", f"{e2e_ms:.2f}"
-        )
         print("output:", r["raw"])
         print("parsed_json:", json.dumps(r["json"], ensure_ascii=False) if r["json"] is not None else "None")
 
+        # ↓↓↓ 요청사항: parsed_json 이후에 줄바꿈하고 시간 정보를 가시성 좋게 출력 ↓↓↓
+        print(
+            "\n"
+            "[Timing]\n"
+            f"  준비시간(prep_ms): {r.get('prep_ms'):.2f}" if r.get("prep_ms") is not None else "  준비시간(prep_ms): NA"
+        )
+        print(
+            f"  인코딩시간(encode_ms): {r.get('encode_ms'):.2f}" if r.get("encode_ms") is not None else "  인코딩시간(encode_ms): NA"
+        )
+        print(
+            f"  GPU전송시간(h2d_ms): {r.get('h2d_ms'):.2f}" if r.get("h2d_ms") is not None else "  GPU전송시간(h2d_ms): NA"
+        )
+        print(
+            f"  첫토큰대기(TTFT, ttft_ms): {r['ttft_ms']:.2f}" if r.get("ttft_ms") is not None else "  첫토큰대기(TTFT, ttft_ms): NA"
+        )
+        print(
+            f"  생성속도(tok/s): {r['tok_s']:.2f}" if r.get("tok_s") is not None else "  생성속도(tok/s): NA"
+        )
+        print(f"  생성전체시간(total_ms): {total_ms:.2f}")
+        print(f"  후처리시간(post_ms): {post_ms:.2f}")
+        print(f"  전체응답시간(e2e_ms): {e2e_ms:.2f}")
 
 if __name__ == "__main__":
     main()
