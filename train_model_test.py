@@ -1,7 +1,12 @@
 # test_print_only.py
 # -*- coding: utf-8 -*-
-import argparse, json, time, threading
+import argparse
+import json
+import time
+import threading
+import re
 from typing import Optional, Dict, Any
+
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 
@@ -65,11 +70,64 @@ DEFAULT_PROMPTS = [
     "보안팀 보고서를 작성하라. 아래 데이터에서 발견된 민감정보 유형과 잠재적 위험을 요약해: 카드번호 4444 3333 2222 1111, CVV 987, 만료일 09/27."
 ]
 
-def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, Any]:
-    import time, json, threading
-    from typing import Optional
+# --------- 출력 정리/파싱 보강 유틸 ---------
+CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 
-    t0 = time.perf_counter()  # ← 함수 진입 시각
+def sanitize_text(s: str) -> str:
+    """JSON 파싱을 방해하는 제어문자 정리 및 트리밍"""
+    return (s.replace("\u2028", "\n")
+             .replace("\u2029", "\n")
+             .replace("\ufeff", "")).strip()
+
+def strip_role_headers(s: str) -> str:
+    """앞뒤에 섞인 role 라벨(system/user/assistant)을 순하게 제거"""
+    s = s.lstrip()
+    for prefix in ("system\n", "user\n", "assistant\n"):
+        if s.startswith(prefix):
+            s = s[len(prefix):].lstrip()
+    # 말미에 단독 라벨이 남은 경우 제거
+    s = re.sub(r"(?:\n|^)(system|user|assistant)\s*$", "", s, flags=re.IGNORECASE)
+    return s.strip()
+
+def extract_top_level_json(s: str) -> Optional[str]:
+    """코드펜스 우선, 실패 시 중괄호 레벨 카운팅으로 최상위 JSON 블록 추출"""
+    s = sanitize_text(strip_role_headers(s))
+    # 1) 코드펜스 안 JSON 우선
+    m = CODE_FENCE_RE.search(s)
+    if m:
+        return m.group(1).strip()
+    # 2) 최상위 { ... } 균형 찾기
+    first = s.find("{")
+    if first == -1:
+        return None
+    level = 0
+    in_str = False
+    esc = False
+    for i in range(first, len(s)):
+        ch = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        else:
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                level += 1
+            elif ch == "}":
+                level -= 1
+                if level == 0:
+                    return s[first:i+1].strip()
+    return None
+
+# --------- 추론 1회 ---------
+def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, Any]:
+    t0 = time.perf_counter()  # 함수 진입 시각
 
     messages = [
         {"role": "system", "content": SYS_PROMPT},
@@ -97,7 +155,7 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
     )
 
     # 여기까지가 프롬프트 준비 시간
-    start = time.perf_counter()  # ← generate 직전(= prep 끝)
+    start = time.perf_counter()  # generate 직전(= prep 끝)
     prep_ms = (start - t0) * 1000.0
     encode_ms = (t_enc1 - t_enc0) * 1000.0
     h2d_ms = (t_h2d1 - t_h2d0) * 1000.0
@@ -109,7 +167,8 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
     def _consume():
         nonlocal first_token_time
         for _tok in streamer:
-            if first_token_time is None:
+            # 첫 비어있지 않은 청크의 시각을 TTFT로 기록
+            if first_token_time is None and _tok:
                 first_token_time = time.perf_counter()
             raw_chunks.append(_tok)
 
@@ -122,11 +181,13 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
     t.join()
     end = time.perf_counter()
 
-    raw_out = "".join(raw_chunks).strip()
+    raw_out = "".join(raw_chunks)
+    raw_out = sanitize_text(raw_out)
+
     total_ms = (end - start) * 1000.0                    # generate 시작→완료
     ttft_ms = (first_token_time - start) * 1000.0 if first_token_time else None  # 첫 토큰까지
 
-    # 생성 토큰 수/토큰속도
+    # 생성 토큰 수/토큰속도(대략적 계산: 디코딩 텍스트를 다시 토크나이즈)
     out_ids = tok(raw_out, return_tensors="pt")["input_ids"][0]
     gen_tokens = out_ids.size(0)
     tok_s = None
@@ -135,26 +196,31 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
         if duration_gen > 0:
             tok_s = gen_tokens / duration_gen
 
-    # JSON 파싱
+    # JSON 파싱 (후처리 시간 측정)
+    post0 = time.perf_counter()
     parsed = None
     try:
-        s = raw_out
-        l, r = s.find("{"), s.rfind("}")
-        parsed = json.loads(s[l:r+1] if (l != -1 and r != -1 and r > l) else s)
+        candidate = extract_top_level_json(raw_out)
+        if candidate:
+            parsed = json.loads(candidate)
     except Exception:
         parsed = None
+    post1 = time.perf_counter()
+    post_ms = (post1 - post0) * 1000.0
 
     return {
         "raw": raw_out,
         "json": parsed,
-        "prep_ms": prep_ms,        # ★ 추가
-        "encode_ms": encode_ms,    # (참고) 토크나이즈/템플릿
-        "h2d_ms": h2d_ms,          # (참고) 호스트→디바이스 복사
+        "prep_ms": prep_ms,
+        "encode_ms": encode_ms,
+        "h2d_ms": h2d_ms,
         "ttft_ms": ttft_ms,
         "total_ms": total_ms,
-        "tok_s": tok_s
+        "tok_s": tok_s,
+        "post_ms": post_ms,
     }
 
+# --------- 메인 ---------
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_dir", required=True, help="Merged model dir (e.g., runs/qwen7b_sft_merged)")
@@ -172,27 +238,27 @@ def main():
     for i, p in enumerate(prompts, 1):
         r = infer_once(tok, model, p, max_new_tokens=args.max_new_tokens)
 
-        # 엔드투엔드 시간(입력 준비 → 생성 완료)
+        # 엔드투엔드 시간(입력 준비 → 생성 완료 → 후처리)
         prep_ms = r.get("prep_ms") or 0.0
         total_ms = r.get("total_ms") or 0.0
-        # infer_once에서 post_ms를 추가했다면 아래처럼 포함
-        # post_ms = r.get("post_ms") or 0.0
-        # e2e_ms = prep_ms + total_ms + post_ms
-        e2e_ms = prep_ms + total_ms
+        post_ms = r.get("post_ms") or 0.0
+        e2e_ms = prep_ms + total_ms + post_ms
 
         print(f"\n--- TEST #{i} ---")
         print("prompt:", p)
         print(
-            "준비시간(prep_ms):", f"{(r.get('prep_ms') if r.get('prep_ms') is not None else float('nan')):.2f}",
-            "| 인코딩시간(encode_ms):", f"{(r.get('encode_ms') if r.get('encode_ms') is not None else float('nan')):.2f}",
-            "| GPU전송시간(h2d_ms):", f"{(r.get('h2d_ms') if r.get('h2d_ms') is not None else float('nan')):.2f}",
+            "준비시간(prep_ms):", f"{r.get('prep_ms'):.2f}" if r.get("prep_ms") is not None else "NA",
+            "| 인코딩시간(encode_ms):", f"{r.get('encode_ms'):.2f}" if r.get("encode_ms") is not None else "NA",
+            "| GPU전송시간(h2d_ms):", f"{r.get('h2d_ms'):.2f}" if r.get("h2d_ms") is not None else "NA",
             "| 첫토큰대기(TTFT, ttft_ms):", f"{r['ttft_ms']:.2f}" if r.get('ttft_ms') is not None else "NA",
             "| 생성속도(tok/s):", f"{r['tok_s']:.2f}" if r.get('tok_s') is not None else "NA",
             "| 생성전체시간(total_ms):", f"{total_ms:.2f}",
+            "| 후처리시간(post_ms):", f"{post_ms:.2f}",
             "| 전체응답시간(e2e_ms):", f"{e2e_ms:.2f}"
         )
         print("output:", r["raw"])
         print("parsed_json:", json.dumps(r["json"], ensure_ascii=False) if r["json"] is not None else "None")
+
 
 if __name__ == "__main__":
     main()
