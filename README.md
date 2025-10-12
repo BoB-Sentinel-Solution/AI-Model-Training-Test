@@ -60,3 +60,15 @@ python validate_messages_jsonl.py Learning_Test_Dataset_10.jsonl
 ```
 python train_model_test.py --model_dir runs/qwen3b_sft_merged
 ```
+
+---
+## 학습한 모델 퍼포먼스 테스트(임시)
+```
+python3 /mnt/data/ai_perf_infer_eval_ko.py \
+  --prompts "AI performance test id_prompt.jsonl" \
+  --answers "AI performance test id_answer.jsonl" \
+  --model "runs/qwen3b_sft_merged" \
+  --label-map "performence/label_map.json" \
+  --out "performence/parsed.jsonl" \
+  --match overlap --iou 0.5
+```
