@@ -171,20 +171,30 @@ def main():
 
     for i, p in enumerate(prompts, 1):
         r = infer_once(tok, model, p, max_new_tokens=args.max_new_tokens)
+
+        # 엔드투엔드 시간(입력 준비 → 생성 완료)
+        prep_ms = r.get("prep_ms") or 0.0
+        total_ms = r.get("total_ms") or 0.0
+        # infer_once에서 post_ms를 추가했다면 아래처럼 포함
+        # post_ms = r.get("post_ms") or 0.0
+        # e2e_ms = prep_ms + total_ms + post_ms
+        e2e_ms = prep_ms + total_ms
+
         print(f"\n--- TEST #{i} ---")
         print("prompt:", p)
-        # ▼ prep_ms/encode_ms/h2d_ms/ttft_ms/tok_s/total_ms 표기
         print(
-            "prep_ms:", f"{r.get('prep_ms', float('nan')):.2f}",
-            "| encode_ms:", f"{r.get('encode_ms', float('nan')):.2f}",
-            "| h2d_ms:", f"{r.get('h2d_ms', float('nan')):.2f}",
-            "| ttft_ms:", f"{r['ttft_ms']:.2f}" if r.get('ttft_ms') is not None else "NA",
-            "| tok/s:", f"{r['tok_s']:.2f}" if r.get('tok_s') is not None else "NA",
-            "| total_ms:", f"{r['total_ms']:.2f}"
+            "준비시간(prep_ms):", f"{(r.get('prep_ms') if r.get('prep_ms') is not None else float('nan')):.2f}",
+            "| 인코딩시간(encode_ms):", f"{(r.get('encode_ms') if r.get('encode_ms') is not None else float('nan')):.2f}",
+            "| GPU전송시간(h2d_ms):", f"{(r.get('h2d_ms') if r.get('h2d_ms') is not None else float('nan')):.2f}",
+            "| 첫토큰대기(TTFT, ttft_ms):", f"{r['ttft_ms']:.2f}" if r.get('ttft_ms') is not None else "NA",
+            "| 생성속도(tok/s):", f"{r['tok_s']:.2f}" if r.get('tok_s') is not None else "NA",
+            "| 생성전체시간(total_ms):", f"{total_ms:.2f}",
+            "| 전체응답시간(e2e_ms):", f"{e2e_ms:.2f}"
         )
         print("output:", r["raw"])
         print("parsed_json:", json.dumps(r["json"], ensure_ascii=False) if r["json"] is not None else "None")
 
 if __name__ == "__main__":
     main()
+
 
