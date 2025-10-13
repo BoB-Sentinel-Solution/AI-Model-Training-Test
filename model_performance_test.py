@@ -1,48 +1,19 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AI 민감정보 탐지: 추론(+예측 생성) + 평가 통합 스크립트 (한국어 출력)
+AI 민감정보 탐지: 추론(+예측 생성) + 평가 (v2, 한국어 출력)
 
-두 가지 방식 지원:
-1) 이미 만든 예측 JSONL을 평가만 하기
-   - --predictions 를 제공하면 모델 로딩 없이 곧바로 평가
-
-2) 직접/허깅페이스 경로의 NER 모델로 추론하여 예측 생성 후 평가
-   - --model 에 로컬 경로 또는 hub 식별자 입력(예: "yourname/ner-korean-pii")
-   - 토큰 분류(ner) 계열 모델을 가정: transformers pipeline("token-classification")
-   - 결과를 JSONL로 저장(--out)하고, 즉시 정답과 비교하여 성능 출력
-
-입력 파일
-- prompts(JSONL):   {"id": "...", "text": "원문"} …
-- answers(JSONL):   {"id": "...", "entities":[{"begin":int,"end":int,"label":"..."}]}
-- predictions(JSONL): 위 answers와 동일 구조(id+entities) — (직접 평가만 할 때 사용)
-
-사용 예
-  # A) 허깅페이스 모델로 추론+평가 (IoU 겹침 허용)
-  python3 ai_perf_infer_eval_ko.py \
-    --prompts "/mnt/data/AI performance test id_prompt.jsonl" \
-    --answers "/mnt/data/AI performance test id_answer.jsonl" \
-    --model "yourname/ner-korean-pii" \
-    --out "/tmp/preds.jsonl" \
-    --match overlap --iou 0.5
-
-  # B) 이미 생성된 예측 파일만 평가
-  python3 ai_perf_infer_eval_ko.py \
-    --answers "/mnt/data/AI performance test id_answer.jsonl" \
-    --predictions "/tmp/preds.jsonl" \
-    --match exact
-
-필요 패키지
-  pip install transformers==4.* torch>=2.*
-  (GPU 권장: CUDA 환경에서 자동 사용)
+변경점
+- token-classification 파이프라인 호출에서 `truncation` 인자 제거 (HF 최신 버전과 호환)
+- 길이 초과 텍스트 자동 청크 분할(window/overlap) 지원
+- --task 선택 추가: "token"(기본) 또는 "generation"
 """
+
 import argparse
 import json
+import re
 from collections import Counter
 from typing import Dict, List, Tuple, Optional
-
-# ------------------------- 공통: 로드/매칭/지표 -------------------------
 
 def load_jsonl(path: str) -> List[dict]:
     items = []
@@ -136,7 +107,7 @@ def evaluate(answers_path: str, predictions_path: str, match: str, iou: float):
     f1        = safe_div(2*precision*recall, precision+recall) if (precision+recall) else 0.0
 
     print("==============================================")
-    print(" AI 중요정보 탐지 성능 결과 (한국어 출력)")
+    print(" AI 민감정보 탐지 성능 결과 (한국어 출력)")
     print("==============================================\n")
     print("■ 전체 요약 (Micro-averaged)")
     print(f"  - TP(참양성) = {total_tp}")
@@ -173,32 +144,37 @@ def evaluate(answers_path: str, predictions_path: str, match: str, iou: float):
         print(f"  - F1(매크로)     = {macro_f1:.4f}")
         print()
 
-# ------------------------- 추론(토큰분류) -------------------------
+def chunk_text(text: str, tokenizer, stride_chars: int = 50) -> List[Tuple[int, str]]:
+    if not text:
+        return [(0, "")]
+    max_chars = 4096
+    chunks = []
+    i = 0
+    n = len(text)
+    while i < n:
+        end = min(n, i + max_chars)
+        chunk = text[i:end]
+        chunks.append((i, chunk))
+        if end == n:
+            break
+        i = end - min(stride_chars, end - i)
+    return chunks
 
-def infer_with_token_classification(prompts_path: str, model_id: str, out_path: str,
-                                    aggregation: str = "simple",
-                                    device: Optional[str] = None,
-                                    label_map: Optional[Dict[str,str]] = None,
-                                    batch_size: int = 8):
-    """
-    Token-classification pipeline으로 엔티티 예측을 생성해 JSONL로 저장.
-    - model_id: 로컬 경로나 hub 식별자
-    - aggregation: "simple"|"first"|"max"|None (transformers aggregation_strategy)
-    - label_map: 모델 라벨 -> 평가 라벨 매핑(예: {"B-SSN":"SSN","I-SSN":"SSN"})
-    - device: "cpu"|"cuda"|"mps"|None(자동)
-    """
+def infer_token_classification(prompts_path: str, model_id: str, out_path: str,
+                               aggregation: str = "simple",
+                               device: Optional[str] = None,
+                               label_map: Optional[Dict[str,str]] = None,
+                               batch_size: int = 8):
     from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
 
-    print(f"[INFO] 모델 로딩: {model_id}")
-    tok = AutoTokenizer.from_pretrained(model_id)
+    print(f"[INFO] token-classification 모델 로딩: {model_id}")
+    tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
     model = AutoModelForTokenClassification.from_pretrained(model_id)
 
-    # device 설정
     pipe_kwargs = {}
     if device:
         pipe_kwargs["device"] = 0 if device == "cuda" else -1
     else:
-        # auto
         try:
             import torch
             pipe_kwargs["device"] = 0 if torch.cuda.is_available() else -1
@@ -213,13 +189,11 @@ def infer_with_token_classification(prompts_path: str, model_id: str, out_path: 
     def map_label(lab: str) -> str:
         if label_map and lab in label_map:
             return label_map[lab]
-        # BIO 라벨이면 접두어 제거(B-, I-, S-, E- 등)
         for pref in ("B-","I-","S-","E-","U-","L-"):
             if lab.startswith(pref):
                 return lab[len(pref):]
         return lab
 
-    # 추론 및 저장
     with open(out_path, "w", encoding="utf-8") as w:
         for obj in prompts:
             sid = str(obj.get("id"))
@@ -227,61 +201,145 @@ def infer_with_token_classification(prompts_path: str, model_id: str, out_path: 
             if not text:
                 w.write(json.dumps({"id": sid, "entities": []}, ensure_ascii=False)+"\n")
                 continue
-            out = nlp(text, batch_size=batch_size, truncation=False)
-            ents = []
-            for ent in out:
-                # transformers 토큰분류 파이프라인은 start/end(문자 인덱스) 제공
-                b = int(ent.get("start", 0))
-                e = int(ent.get("end", 0))
-                lab = str(ent.get("entity_group") or ent.get("entity") or "")
-                lab = map_label(lab)
-                ents.append({"begin": b, "end": e, "label": lab})
-            w.write(json.dumps({"id": sid, "entities": ents}, ensure_ascii=False)+"\n")
+
+            entities = []
+            for base_off, chunk in chunk_text(text, tok):
+                out = nlp(chunk, batch_size=batch_size)
+                for ent in out:
+                    b = int(ent.get("start", 0)) + base_off
+                    e = int(ent.get("end", 0)) + base_off
+                    lab = str(ent.get("entity_group") or ent.get("entity") or "")
+                    lab = map_label(lab)
+                    entities.append({"begin": b, "end": e, "label": lab})
+
+            w.write(json.dumps({"id": sid, "entities": entities}, ensure_ascii=False)+"\n")
 
     print(f"[INFO] 예측 저장: {out_path}")
 
-# ------------------------- main -------------------------
+GEN_SYS_PROMPT = (
+    "당신은 민감정보 탐지기입니다. 사용자가 제공하는 텍스트에서 민감정보 엔티티를 추출해 "
+    '다음 JSON 형식으로만 출력하세요: {"entities":[{"begin":정수,"end":정수,"label":"라벨"} ...]}\n'
+    "begin/end는 0-기반 문자 오프셋이며 end는 배타적입니다. 응답에는 JSON만 포함하세요."
+)
+
+def extract_first_json(text: str) -> Optional[dict]:
+    m = __import__("re").search(r'\{.*\}', text, flags=__import__("re").S)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0))
+    except Exception:
+        return None
+
+def infer_generation(prompts_path: str, model_id: str, out_path: str,
+                     device: Optional[str] = None, max_new_tokens: int = 256,
+                     temperature: float = 0.2, top_p: float = 0.9):
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    import torch
+
+    print(f"[INFO] generation 모델 로딩: {model_id}")
+    tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
+    model = AutoModelForCausalLM.from_pretrained(model_id)
+    model.eval()
+
+    if device == "cuda" or (device is None and torch.cuda.is_available()):
+        model.to("cuda")
+        dev = "cuda"
+    else:
+        dev = "cpu"
+
+    prompts = load_jsonl(prompts_path)
+
+    with open(out_path, "w", encoding="utf-8") as w:
+        for obj in prompts:
+            sid = str(obj.get("id"))
+            text = obj.get("text","")
+            if not text:
+                w.write(json.dumps({"id": sid, "entities": []}, ensure_ascii=False)+"\n")
+                continue
+
+            user_prompt = f"텍스트:\n{text}\n\n위 텍스트에서 엔티티를 JSON으로만 출력하세요."
+            full = GEN_SYS_PROMPT + "\n\n" + user_prompt
+
+            inputs = tok(full, return_tensors="pt")
+            inputs = {k: v.to(dev) for k,v in inputs.items()}
+
+            with torch.no_grad():
+                out_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,
+                    temperature=temperature,
+                    top_p=top_p,
+                    pad_token_id=tok.eos_token_id
+                )
+            out_text = tok.decode(out_ids[0], skip_special_tokens=True)
+
+            parsed = extract_first_json(out_text) or {"entities":[]}
+            entities = []
+            for e in parsed.get("entities", []):
+                try:
+                    b = int(e["begin"]); e_ = int(e["end"]); lab = str(e["label"])
+                    if 0 <= b < e_ <= len(text):
+                        entities.append({"begin": b, "end": e_, "label": lab})
+                except Exception:
+                    continue
+
+            w.write(json.dumps({"id": sid, "entities": entities}, ensure_ascii=False)+"\n")
+
+    print(f"[INFO] 예측 저장: {out_path}")
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--task", choices=["token","generation"], default="token", help="추론 방식 선택")
     ap.add_argument("--prompts", help="프롬프트 JSONL 경로(id+text). 추론 시 필요")
     ap.add_argument("--answers", required=True, help="정답지 JSONL 경로(id+entities)")
     ap.add_argument("--predictions", help="예측 JSONL 경로(있으면 평가만 수행)")
-    ap.add_argument("--model", help="허깅페이스 식별자 또는 로컬 경로(토큰분류 모델)")
+    ap.add_argument("--model", help="허깅페이스 식별자 또는 로컬 경로")
     ap.add_argument("--out", default="predictions.jsonl", help="추론 결과 저장 경로")
     ap.add_argument("--match", choices=["exact","overlap"], default="exact", help="스팬 매칭 방식")
     ap.add_argument("--iou", type=float, default=0.5, help="IoU 임계값( --match overlap )")
-    ap.add_argument("--aggregation", default="simple", help="token-classification aggregation_strategy")
+    ap.add_argument("--aggregation", default="simple", help="[token] aggregation_strategy")
     ap.add_argument("--device", choices=["cpu","cuda","mps"], help="강제 디바이스 선택(미지정시 auto)")
-    ap.add_argument("--label-map", help="라벨 매핑 JSON 경로(모델라벨->평가라벨)")
-    ap.add_argument("--batch-size", type=int, default=8, help="추론 배치 크기")
+    ap.add_argument("--label-map", help="[token] 라벨 매핑 JSON 경로(모델라벨->평가라벨)")
+    ap.add_argument("--batch-size", type=int, default=8, help="[token] 추론 배치 크기]")
+    ap.add_argument("--max-new-tokens", type=int, default=256, help="[generation] 생성 길이")
+    ap.add_argument("--temperature", type=float, default=0.2, help="[generation] 샘플링 온도")
+    ap.add_argument("--top-p", type=float, default=0.9, help="[generation] top-p")
     args = ap.parse_args()
 
-    # 1) 예측 파일이 이미 있으면 바로 평가
     if args.predictions:
         evaluate(args.answers, args.predictions, args.match, args.iou)
         return
 
-    # 2) 모델로 추론 → 예측 생성 → 평가
     if not args.model or not args.prompts:
         raise SystemExit("모델 추론을 사용하려면 --model 과 --prompts 를 함께 지정하거나, --predictions 로 예측 파일을 주세요.")
 
-    label_map = None
-    if args.label_map:
-        with open(args.label_map, "r", encoding="utf-8") as f:
-            label_map = json.load(f)  # {"B-FOO":"FOO","I-FOO":"FOO", ...}
+    if args.task == "token":
+        label_map = None
+        if args.label_map:
+            with open(args.label_map, "r", encoding="utf-8") as f:
+                label_map = json.load(f)
+        infer_token_classification(
+            prompts_path=args.prompts,
+            model_id=args.model,
+            out_path=args.out,
+            aggregation=args.aggregation,
+            device=args.device,
+            label_map=label_map,
+            batch_size=args.batch_size
+        )
+    else:
+        infer_generation(
+            prompts_path=args.prompts,
+            model_id=args.model,
+            out_path=args.out,
+            device=args.device,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p
+        )
 
-    infer_with_token_classification(
-        prompts_path=args.prompts,
-        model_id=args.model,
-        out_path=args.out,
-        aggregation=args.aggregation,
-        device=args.device,
-        label_map=label_map,
-        batch_size=args.batch_size
-    )
-
-    # 생성한 예측을 즉시 평가
     evaluate(args.answers, args.out, args.match, args.iou)
 
 if __name__ == "__main__":
