@@ -1,4 +1,4 @@
-# check_dataset.py
+# check_dataset.py (revised)
 # -*- coding: utf-8 -*-
 
 import json
@@ -153,8 +153,84 @@ def check_offsets(text, ents, *, use_nfkc=False, allow_overlap=False, strict_ent
         errs.append("WARNING: text not NFC-normalized (may cause offset drift)")
     return errs
 
+def extract_payload(row, *, ln, strict_messages=True):
+    """
+    row에서 유효한 payload(text, has_sensitive, entities)를 뽑아온다.
+    두 포맷 지원:
+      (A) {"messages":[{"role":"system"...},{"role":"user"...},{"role":"assistant","content":"{...}"}]}
+      (B) {"id":"...", "answer":"{...}"}  또는 {"id":"...", "answer":{...}}
+    반환: (payload_dict or None, errors[list of str])
+    """
+    errs = []
+
+    # (A) messages 포맷
+    if "messages" in row:
+        msgs = row.get("messages")
+        if not isinstance(msgs, list) or len(msgs) != 3:
+            errs.append(f"[L{ln}] messages must be list of length 3")
+            return None, errs
+
+        roles = [m.get("role") for m in msgs]
+        if roles != ["system","user","assistant"]:
+            errs.append(f"[L{ln}] role order must be system,user,assistant (got {roles})")
+
+        for ri, m in enumerate(msgs):
+            if "content" not in m or not isinstance(m["content"], str):
+                errs.append(f"[L{ln}] messages[{ri}] missing content or not string")
+
+        ac = msgs[2].get("content", "")
+        ans, err = parse_assistant_json(ac)
+        if err:
+            errs.append(f"[L{ln}] {err}")
+            return None, errs
+        return ans, errs
+
+    # (B) id/answer 포맷
+    if "answer" in row:
+        ans_raw = row["answer"]
+        if isinstance(ans_raw, str):
+            try:
+                ans = json.loads(ans_raw)
+            except Exception as e:
+                errs.append(f"[L{ln}] answer JSON parse error: {e}")
+                return None, errs
+        elif isinstance(ans_raw, dict):
+            ans = ans_raw
+        else:
+            errs.append(f"[L{ln}] 'answer' must be JSON string or object")
+            return None, errs
+
+        if not isinstance(ans, dict):
+            errs.append(f"[L{ln}] answer is not a JSON object")
+            return None, errs
+        return ans, errs
+
+    # 인식 불가 포맷
+    errs.append(f"[L{ln}] unsupported format: expected 'messages' or 'answer' key")
+    return None, errs
+
+def validate_payload(ans, *, ln):
+    """payload(dict)에서 키/타입 검사 후 (text, has_sensitive, entities, errors) 반환"""
+    errs = []
+    exp_keys = {"text","has_sensitive","entities"}
+    if set(ans.keys()) != exp_keys:
+        errs.append(f"[L{ln}] assistant JSON keys must be {exp_keys} (got {set(ans.keys())})")
+
+    text_body = ans.get("text")
+    hs = ans.get("has_sensitive")
+    ents = ans.get("entities")
+
+    if not isinstance(text_body, str):
+        errs.append(f"[L{ln}] 'text' must be string")
+    if not isinstance(hs, bool):
+        errs.append(f"[L{ln}] 'has_sensitive' must be boolean")
+    if not isinstance(ents, list):
+        errs.append(f"[L{ln}] 'entities' must be list")
+
+    return text_body, hs, ents, errs
+
 def main():
-    ap = argparse.ArgumentParser(description="Dataset validator for messages JSONL")
+    ap = argparse.ArgumentParser(description="Dataset validator for messages/answer JSONL")
     ap.add_argument("path", nargs=1, help="input JSONL file")
     ap.add_argument("--nfkc", action="store_true", help="use NFKC normalization for slice comparison (default NFC)")
     ap.add_argument("--allow-overlap", action="store_true", help="do not error on overlapping entity spans")
@@ -185,67 +261,40 @@ def main():
             bad += 1
             continue
 
-        # messages 구조
-        msgs = row.get("messages")
-        if not isinstance(msgs, list) or len(msgs) != 3:
-            print(f"[L{ln}] messages must be list of length 3")
-            bad += 1
-            continue
-
-        roles = [m.get("role") for m in msgs]
-        if roles != ["system","user","assistant"]:
-            print(f"[L{ln}] role order must be system,user,assistant (got {roles})")
-            bad += 1
-
-        for ri, m in enumerate(msgs):
-            if "content" not in m or not isinstance(m["content"], str):
-                print(f"[L{ln}] messages[{ri}] missing content or not string")
+        # 공통 payload 추출 (messages 또는 answer)
+        ans, errs = extract_payload(row, ln=ln)
+        if errs:
+            for e in errs:
+                print(e)
+            if ans is None:
                 bad += 1
+                continue  # 다음 라인
 
-        # assistant.content 파싱
-        ac = msgs[2].get("content", "")
-        ans, err = parse_assistant_json(ac)
-        if err:
-            print(f"[L{ln}] {err}")
+        # payload 스키마 검사
+        text_body, hs, ents, keyerrs = validate_payload(ans, ln=ln)
+        for e in keyerrs:
+            print(e)
+        if keyerrs:
             bad += 1
-            continue
-
-        # 정답 JSON 스키마 검사
-        exp_keys = {"text","has_sensitive","entities"}
-        if set(ans.keys()) != exp_keys:
-            print(f"[L{ln}] assistant JSON keys must be {exp_keys} (got {set(ans.keys())})")
-            bad += 1
-
-        text_body = ans.get("text")
-        hs = ans.get("has_sensitive")
-        ents = ans.get("entities")
-
-        if not isinstance(text_body, str):
-            print(f"[L{ln}] 'text' must be string")
-            bad += 1
-        if not isinstance(hs, bool):
-            print(f"[L{ln}] 'has_sensitive' must be boolean")
-            bad += 1
-        if not isinstance(ents, list):
-            print(f"[L{ln}] 'entities' must be list")
-            bad += 1
-            continue
+            # entities 타입이 아니면 이후 오프셋 검사 불가
+            if not isinstance(ents, list) or not isinstance(text_body, str):
+                continue
 
         # 오프셋/라벨 검사
-        errs = check_offsets(
+        offs = check_offsets(
             text_body, ents,
             use_nfkc=args.nfkc,
             allow_overlap=args.allow_overlap,
             strict_entity_keys=args.strict_entity_keys,
             warn_sort=not args.no_sort_warn
         )
-        for e in errs:
+        for e in offs:
             print(f"[L{ln}] {e}")
-        if errs:
+        if offs:
             bad += 1
 
         # has_sensitive 논리 일치
-        if (len(ents) > 0) != bool(hs):
+        if isinstance(hs, bool) and ((len(ents) > 0) != bool(hs)):
             print(f"[L{ln}] has_sensitive mismatch: entities={len(ents)} hs={hs}")
             bad += 1
 
