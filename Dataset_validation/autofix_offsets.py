@@ -1,4 +1,4 @@
-# autofix_offsets.py
+# autofix_offsets.py (revised)
 # -*- coding: utf-8 -*-
 
 import json
@@ -6,7 +6,7 @@ import sys
 import argparse
 import unicodedata
 import io
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Union
 
 # --- Windows stderr UTF-8 safeguard (stdout은 파일로만 씀) ---
 try:
@@ -273,37 +273,90 @@ def open_text_auto(path: str):
     except UnicodeError:
         return open(path, "r", encoding="cp949", errors="replace", newline=None)
 
+# ------------------------ 새로 추가: 공통 추출/반영 ------------------------
+
+def parse_answer_field(answer_field: Union[str, dict]) -> Tuple[Optional[dict], Optional[str]]:
+    """
+    answer 필드에서 dict를 파싱해 반환.
+    - 문자열이면 JSON으로 로드
+    - dict이면 그대로
+    반환: (ans_dict or None, error_message or None)
+    """
+    if isinstance(answer_field, str):
+        try:
+            return json.loads(answer_field), None
+        except Exception as e:
+            return None, f"answer JSON parse error: {e}"
+    elif isinstance(answer_field, dict):
+        return answer_field, None
+    else:
+        return None, "answer must be JSON string or object"
+
+def set_answer_field(row: dict, ans: dict, original_was_str: bool):
+    """보정된 ans를 row['answer']에 되돌려 쓰되, 원래 타입(문자열/객체)을 보존."""
+    if original_was_str:
+        row["answer"] = json.dumps(ans, ensure_ascii=False)
+    else:
+        row["answer"] = ans
+
 def process_row(row: dict, args, stats: dict) -> dict:
+    """
+    한 줄 처리:
+    - messages 형식이면 assistant.content의 JSON을 보정 후 문자열로 되돌림
+    - answer 형식이면 answer(JSON 문자열/객체)를 보정 후 원래 타입 유지
+    - 다른 형식이면 원본 그대로 통과
+    """
+    # (A) messages 포맷
     msgs = row.get("messages")
-    if not isinstance(msgs, list) or len(msgs) != 3:
+    if isinstance(msgs, list) and len(msgs) == 3 and isinstance(msgs[2], dict) and "content" in msgs[2]:
+        ac = msgs[2].get("content", "")
+        try:
+            ans = json.loads(ac)
+        except Exception:
+            return row  # assistant.content가 JSON이 아니면 패스
+
+        if isinstance(ans, dict):
+            sanitize_entities(
+                ans,
+                drop_unknown=args.drop_unknown_labels,
+                label_map=(args._label_map or {}),
+                use_nfkc=args.nfkc,
+                use_casefold=args.casefold,
+                stats=stats
+            )
+            msgs[2]["content"] = json.dumps(ans, ensure_ascii=False)
         return row
 
-    ac = msgs[2].get("content", "")
-    try:
-        ans = json.loads(ac)
-    except Exception:
+    # (B) id/answer 포맷
+    if "answer" in row:
+        original_was_str = isinstance(row["answer"], str)
+        ans, perr = parse_answer_field(row["answer"])
+        if ans is None:
+            # 파싱 실패: 원본 보존
+            return row
+
+        if isinstance(ans, dict):
+            sanitize_entities(
+                ans,
+                drop_unknown=args.drop_unknown_labels,
+                label_map=(args._label_map or {}),
+                use_nfkc=args.nfkc,
+                use_casefold=args.casefold,
+                stats=stats
+            )
+            set_answer_field(row, ans, original_was_str)
         return row
 
-    if not isinstance(ans, dict):
-        return row
-
-    sanitize_entities(
-        ans,
-        drop_unknown=args.drop_unknown_labels,
-        label_map=(args._label_map or {}),
-        use_nfkc=args.nfkc,
-        use_casefold=args.casefold,
-        stats=stats
-    )
-
-    msgs[2]["content"] = json.dumps(ans, ensure_ascii=False)
+    # 지원하지 않는 형식 -> 그대로 반환
     return row
+
+# --------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Fix entity offsets and optionally map/drop labels; output is always UTF-8."
+        description="Fix entity offsets and optionally map/drop labels; supports messages[...] or id/answer formats; output is always UTF-8."
     )
-    ap.add_argument("input", help="입력 JSONL (messages: system,user,assistant)")
+    ap.add_argument("input", help="입력 JSONL (messages: system,user,assistant) 또는 (id, answer)")
     ap.add_argument("output", help="출력 JSONL (항상 UTF-8 저장)")
     ap.add_argument("--nfkc", action="store_true", help="정규화 비교 시 NFKC 사용(기본 NFC)")
     ap.add_argument("--casefold", action="store_true", help="대소문자 무시(casefold) 비교 사용")
