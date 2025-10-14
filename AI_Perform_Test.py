@@ -415,8 +415,18 @@ def infer_generation(
 
     print(f"[INFO] generation 모델 로딩: {model_id}")
     tok = AutoTokenizer.from_pretrained(model_id, use_fast=True, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
+    
+    # 전역 BF16 (CUDA 있을 때), CPU일 땐 기본 dtype 유지
+    torch_dtype = torch.bfloat16 if torch.cuda.is_available() else None
+    
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        trust_remote_code=True,
+        torch_dtype=torch_dtype,     # ★ BF16로 로드
+        low_cpu_mem_usage=True       # ★ CPU 피크 메모리 절약
+    )
     model.eval()
+
     # pad 토큰 안전 설정 (없으면 eos로 대체)
     if tok.pad_token_id is None and tok.eos_token_id is not None:
         tok.pad_token = tok.eos_token
@@ -811,3 +821,4 @@ def main():
 
 if __name__=="__main__":
     main()
+
