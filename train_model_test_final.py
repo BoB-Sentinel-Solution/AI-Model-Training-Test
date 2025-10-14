@@ -409,8 +409,14 @@ def main():
 
         print(f"\n--- TEST #{i} ---")
         print("prompt:", p, end="\n\n")
+
+        display_out = r["raw"]
+        cand = extract_best_json(display_out)
+        if cand:
+            display_out = f"assistant {cand}"
+        print("output:", display_out)
         print("parsed_json:", json.dumps(r["json"], ensure_ascii=False) if r["json"] is not None else "None")
-        print()
+
 
         # parsed_json 이후, 가독성 좋은 타이밍 블록
         print("\n[Timing]")
