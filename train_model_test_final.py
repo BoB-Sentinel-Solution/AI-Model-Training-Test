@@ -415,6 +415,7 @@ def main():
         if cand:
             display_out = f"assistant {cand}"
         print("output:", display_out)
+        print()
         print("parsed_json:", json.dumps(r["json"], ensure_ascii=False) if r["json"] is not None else "None")
 
 
