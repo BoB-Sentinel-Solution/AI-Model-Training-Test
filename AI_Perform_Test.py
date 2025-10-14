@@ -33,8 +33,9 @@ def free_cuda():
 SYS_PROMPT = """
 You are a strict detector for sensitive entities (PII and secrets).
 
-Return ONLY a compact JSON:
-{"has_sensitive": <true|false>, "entities": [{"type": "<LABEL>", "value": "<exact substring>"}]}
+Return ONLY a compact JSON with these keys:
+- has_sensitive: true or false
+- entities: list of {"type": <LABEL>, "value": <exact substring>}
 
 HARD RULES
 - Allowed labels ONLY (uppercase, exact match). If a label is not in the list below, DO NOT invent or output it.
@@ -267,12 +268,37 @@ def print_improvement_summary(summary_list: List[dict]):
 # =========================
 # 4) 공통 프롬프트 강제 & 생성 추론
 # =========================
+import json as _json
+
 def extract_first_json(text: str) -> Optional[dict]:
-    import re, json as _json
-    m = re.search(r'\{.*\}', text, flags=re.S)
-    if not m: return None
-    try: return _json.loads(m.group(0))
-    except Exception: return None
+    # 텍스트 전체에서 { ... } 블록 후보를 전부 추출
+    candidates = []
+    stack = []
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == '{':
+            if not stack:
+                start = i
+            stack.append('{')
+        elif ch == '}':
+            if stack:
+                stack.pop()
+                if not stack and start != -1:
+                    candidates.append(text[start:i+1])
+                    start = -1
+
+    # 뒤에서부터(가장 최근) 유효 JSON인지 검사 + 키 확인
+    for raw in reversed(candidates):
+        try:
+            obj = _json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and "entities" in obj and "has_sensitive" in obj:
+            ents = obj.get("entities")
+            hs = obj.get("has_sensitive")
+            if isinstance(ents, list) and isinstance(hs, (bool, int)):
+                return obj
+    return None
 
 def render_chat_prompt(tokenizer, system_prompt: str, user_prompt: str) -> str:
     # 모델이 chat_template 제공하면 적용, 아니면 fallback
@@ -357,9 +383,14 @@ def infer_generation(
     free_cuda()
 
     print(f"[INFO] generation 모델 로딩: {model_id}")
-    tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
-    model = AutoModelForCausalLM.from_pretrained(model_id)
+    tok = AutoTokenizer.from_pretrained(model_id, use_fast=True, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
     model.eval()
+    
+    # pad 토큰 안전 설정 (없으면 eos로 대체)
+    if tok.pad_token_id is None and tok.eos_token_id is not None:
+        tok.pad_token = tok.eos_token
+
 
     if device == "cuda" or (device is None and torch.cuda.is_available()):
         model.to("cuda"); dev = "cuda"
@@ -368,28 +399,6 @@ def infer_generation(
 
     try:
         prompts = load_jsonl(prompts_path)
-
-        def extract_first_json(text: str) -> Optional[dict]:
-            import re as _re, json as _json
-            m = _re.search(r'\{.*\}', text, flags=_re.S)
-            if not m:
-                return None
-            try:
-                return _json.loads(m.group(0))
-            except Exception:
-                return None
-
-        def render_chat_prompt(tokenizer, system_prompt: str, user_prompt: str) -> str:
-            try:
-                if hasattr(tokenizer, "chat_template") and tokenizer.chat_template:
-                    messages = [
-                        {"role":"system","content":SYS_PROMPT},
-                        {"role":"user","content":user_prompt}
-                    ]
-                    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            except Exception:
-                pass
-            return f"<<SYS>>\n{SYS_PROMPT.strip()}\n<</SYS>>\n<<USER>>\n{user_prompt.strip()}\n<</USER>>\n<<ASSISTANT>>"
 
         with open(out_path, "w", encoding="utf-8") as w:
             for obj in prompts:
@@ -405,18 +414,30 @@ def infer_generation(
                 )
                 rendered = render_chat_prompt(tok, SYS_PROMPT, user_prompt)
 
-                inputs = tok(rendered, return_tensors="pt")
-                inputs = {k: v.to(dev) for k,v in inputs.items()}
+                max_len = getattr(tok, "model_max_length", None) or 4096  # fallback
+                inputs = tok(
+                    rendered,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=max_len
+                )
+                inputs = {k: v.to(dev) for k, v in inputs.items()}
 
-                with torch.no_grad():
+
+                with torch.inference_mode():
                     out_ids = model.generate(
                         **inputs,
                         max_new_tokens=max_new_tokens,
-                        do_sample=True,
-                        temperature=temperature,
-                        top_p=top_p,
-                        pad_token_id=tok.eos_token_id
+                        do_sample=False,          # 완전 결정적
+                        temperature=0.0,
+                        top_p=1.0,
+                        repetition_penalty=1.05,  # 가벼운 반복 억제
+                        pad_token_id=tok.pad_token_id,
+                        eos_token_id=tok.eos_token_id,
+                        use_cache=True
                     )
+
+
                 out_text = tok.decode(out_ids[0], skip_special_tokens=True)
 
                 parsed = extract_first_json(out_text)
@@ -650,5 +671,6 @@ def main():
 
 if __name__=="__main__":
     main()
+
 
 
