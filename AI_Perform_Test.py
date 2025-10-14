@@ -6,6 +6,7 @@
 - 모델 출력(JSON: has_sensitive/entities[type,value]) → 평가 포맷(begin/end/label) 자동 변환
 - Precision / Recall / F1 (Micro/Macro), 라벨별 상세, Latency/Throughput, 향상률, 그래프, PDF
 - (--save-steps) 단계별 디버그 로그: <모델명>_debug.jsonl (raw_output/parsed/filter_actions/filtered_entities/std_entities)
+- (--span-only) 라벨 무시 스팬 매칭 평가(탐지력만 평가)
 """
 
 import argparse
@@ -178,32 +179,56 @@ def chunk_text(text: str, tokenizer, stride_chars: int = 50) -> List[Tuple[int, 
         i = end - min(stride_chars, end - i)
     return chunks
 
-def match_entities(preds, golds, mode="exact", iou_th=0.5):
+def match_entities(preds, golds, mode="exact", iou_th=0.5, span_only: bool=False):
+    """
+    preds, golds: [(begin, end, label), ...]
+    span_only=True 이면 라벨을 무시하고 스팬 겹침으로만 매칭한다.
+    TP/FN은 '골드 라벨' 기준으로 누적하여 per-label 리포트가 의미있게 보이도록 한다.
+    """
     used_g = [False]*len(golds)
     tp = 0
     label_counts = Counter()
+
     for pb, pe, pl in preds:
         match_idx, best_score = -1, -1.0
-        for gi,(gb,ge,gl) in enumerate(golds):
-            if used_g[gi] or pl != gl: continue
+        for gi, (gb, ge, gl) in enumerate(golds):
+            if used_g[gi]:
+                continue
+
+            # 라벨 비교 여부
+            if not span_only and (pl != gl):
+                continue
+
             if mode == "exact":
-                ok = (pb == gb) and (pe == ge); score = 1.0 if ok else -1.0
+                ok = (pb == gb) and (pe == ge)
+                score = 1.0 if ok else -1.0
             else:
-                score = iou_span((pb,pe),(gb,ge)); ok = score >= iou_th
+                score = iou_span((pb, pe), (gb, ge))
+                ok = score >= iou_th
+
             if ok and score > best_score:
-                best_score=score; match_idx=gi
+                best_score = score
+                match_idx = gi
+
         if match_idx >= 0:
-            used_g[match_idx]=True; tp+=1; label_counts[("TP",pl)]+=1
+            used_g[match_idx] = True
+            gold_label = golds[match_idx][2]
+            label_counts[("TP", gold_label)] += 1
+            tp += 1
         else:
-            label_counts[("FP",pl)]+=1
-    for gi,(gb,ge,gl) in enumerate(golds):
+            # FP는 예측 라벨 기준으로 집계(분석 편의). span_only여도 그대로 둔다.
+            label_counts[("FP", pl)] += 1
+
+    for gi, (gb, ge, gl) in enumerate(golds):
         if not used_g[gi]:
-            label_counts[("FN",gl)]+=1
-    fp = sum(v for (t,_),v in label_counts.items() if t=="FP")
-    fn = sum(v for (t,_),v in label_counts.items() if t=="FN")
+            label_counts[("FN", gl)] += 1
+
+    fp = sum(v for (t, _), v in label_counts.items() if t == "FP")
+    fn = sum(v for (t, _), v in label_counts.items() if t == "FN")
     return tp, fp, fn, label_counts
 
-def evaluate_core(answers_path: str, predictions_path: str, match: str, iou: float, verbose: bool=True):
+def evaluate_core(answers_path: str, predictions_path: str, match: str, iou: float,
+                  verbose: bool=True, span_only: bool=False):
     gold_by_id = load_jsonl_by_id(answers_path)
     pred_by_id = load_jsonl_by_id(predictions_path)
     common_ids = sorted(set(gold_by_id.keys()) & set(pred_by_id.keys()))
@@ -213,7 +238,7 @@ def evaluate_core(answers_path: str, predictions_path: str, match: str, iou: flo
     for sid in common_ids:
         golds=[(int(e["begin"]),int(e["end"]),str(e["label"])) for e in gold_by_id[sid].get("entities",[])]
         preds=[(int(e["begin"]),int(e["end"]),str(e["label"])) for e in pred_by_id[sid].get("entities",[])]
-        tp,fp,fn,lc=match_entities(preds,golds,match,iou)
+        tp,fp,fn,lc=match_entities(preds,golds,mode=match,iou_th=iou,span_only=span_only)
         total_tp+=tp; total_fp+=fp; total_fn+=fn; per_label.update(lc)
     precision=safe_div(total_tp,total_tp+total_fp)
     recall=safe_div(total_tp,total_tp+total_fn)
@@ -230,8 +255,9 @@ def evaluate_core(answers_path: str, predictions_path: str, match: str, iou: flo
     macro_r=sum(r_list)/len(r_list) if r_list else 0.0
     macro_f1=sum(f1_list)/len(f1_list) if f1_list else 0.0
     if verbose:
-        print("■ 전체 요약 (Micro)"); print(f"  Precision={precision:.4f} Recall={recall:.4f} F1={f1:.4f}")
-        print("■ 매크로 평균 (Macro)"); print(f"  Precision={macro_p:.4f} Recall={macro_r:.4f} F1={macro_f1:.4f}")
+        tag = "SPAN-ONLY" if span_only else "LABEL-AWARE"
+        print(f"■ 전체 요약 ({tag}, Micro)"); print(f"  Precision={precision:.4f} Recall={recall:.4f} F1={f1:.4f}")
+        print(f"■ 매크로 평균 ({tag}, Macro)"); print(f"  Precision={macro_p:.4f} Recall={macro_r:.4f} F1={macro_f1:.4f}")
     return {
         "precision_micro":precision, "recall_micro":recall, "f1_micro":f1,
         "precision_macro":macro_p, "recall_macro":macro_r, "f1_macro":macro_f1,
@@ -482,7 +508,6 @@ def infer_generation(
                     norm_type = orig_type.upper()
                     value = str(e.get("value","")).strip()
                     if not norm_type or not value:
-                        # 값이 비면 로그도 남기지 않고 스킵
                         continue
 
                     action = "kept"
@@ -627,7 +652,7 @@ def build_pdf_report(out_pdf, summary_list, per_label_union):
 # 6) 실행 (모델 루프)
 # =========================
 def run_one_model(task, prompts_path, answers_path, model_name, model_id,
-                  outdir, device, match, iou, **gen_kwargs):
+                  outdir, device, match, iou, span_only=False, **gen_kwargs):
     os.makedirs(outdir, exist_ok=True)
     pred_path=os.path.join(outdir,f"{model_name}_predictions.jsonl")
     t0=time.time()
@@ -647,7 +672,7 @@ def run_one_model(task, prompts_path, answers_path, model_name, model_id,
     t1=time.time()
     n_items=len(load_jsonl(prompts_path)) or 1
     latency=(t1-t0)/n_items; throughput=n_items/max(1e-9,(t1-t0))
-    metrics=evaluate_core(answers_path, pred_path, match, iou, verbose=True)
+    metrics=evaluate_core(answers_path, pred_path, match, iou, verbose=True, span_only=span_only)
     metrics["model"]=model_name; metrics["latency"]=latency; metrics["throughput"]=throughput
     free_cuda()
     return metrics
@@ -671,6 +696,9 @@ def main():
                     help="허용외 라벨 처리: drop=버림, closest=가장 가까운 허용라벨로 보정")
     ap.add_argument("--save-steps", action="store_true",
                     help="단계별 결과를 하나의 debug.jsonl로 함께 저장")
+    # span-only (라벨 무시)
+    ap.add_argument("--span-only", action="store_true",
+                    help="라벨을 무시하고 begin/end 스팬 매칭만으로 평가(탐지력만)")
     # token
     ap.add_argument("--aggregation", default="simple")
     ap.add_argument("--batch-size", type=int, default=8)
@@ -688,7 +716,7 @@ def main():
         print(f"\n\n==============================\n[MODEL] {name}  ({mid})\n==============================")
         m=run_one_model(task=args.task, prompts_path=args.prompts, answers_path=args.answers,
                         model_name=name, model_id=mid, outdir=args.outdir, device=args.device,
-                        match=args.match, iou=args.iou,
+                        match=args.match, iou=args.iou, span_only=args.span_only,
                         aggregation=args.aggregation, batch_size=args.batch_size,
                         max_new_tokens=args.max_new_tokens, temperature=args.temperature,
                         top_p=args.top_p, strict_policy=args.strict_policy, save_steps=args.save_steps)
