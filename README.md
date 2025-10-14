@@ -72,3 +72,21 @@ python3 model_performance_test.py \
   --out "performence/parsed.jsonl" \
   --match overlap --iou 0.5
 ```
+
+## AI_Perform_Test.py 사용법 (모델 성능 지표 비교 테스트)
+```
+python AI_Perform_Test.py \
+  --task generation \
+  --prompts /mnt/data/AI_Test_Prompt.jsonl \
+  --answers /mnt/data/AI_Test_Answer.jsonl \
+  --models-json '{
+    "3B_before":"Qwen/Qwen2.5-3B-Instruct",
+    "3B_after":"./fine_tuned/qwen2.5-3b-ft",
+    "7B_before":"Qwen/Qwen2.5-7B-Instruct",
+    "7B_after":"./fine_tuned/qwen2.5-7b-ft"
+  }' \
+  --device cuda \
+  --match exact \
+  --strict-policy drop \
+  --outdir ./eval_results
+```
