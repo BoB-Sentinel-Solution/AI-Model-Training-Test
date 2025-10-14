@@ -14,6 +14,18 @@ import time
 import difflib
 from collections import Counter
 from typing import Dict, List, Tuple, Optional
+import gc
+import torch
+
+def free_cuda():
+    """강제 GC + CUDA 캐시/IP C 청소 (모델 전환 전/후 호출)"""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
 
 # =========================
 # 1) 공통 시스템 프롬프트 (네가 준 버전)
@@ -340,75 +352,129 @@ def infer_generation(
     """
     from transformers import AutoTokenizer, AutoModelForCausalLM
     import torch
+
+    # ✅ 새 모델 올리기 전에 남은 VRAM 깔끔히 청소
+    free_cuda()
+
     print(f"[INFO] generation 모델 로딩: {model_id}")
     tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
     model = AutoModelForCausalLM.from_pretrained(model_id)
     model.eval()
+
     if device == "cuda" or (device is None and torch.cuda.is_available()):
-        model.to("cuda"); dev="cuda"
+        model.to("cuda"); dev = "cuda"
     else:
-        dev="cpu"
+        dev = "cpu"
 
-    prompts = load_jsonl(prompts_path)
-    with open(out_path, "w", encoding="utf-8") as w:
-        for obj in prompts:
-            sid = str(obj.get("id"))
-            text = obj.get("text","")
-            if not text:
-                w.write(json.dumps({"id": sid, "entities": []}, ensure_ascii=False)+"\n")
-                continue
+    try:
+        prompts = load_jsonl(prompts_path)
 
-            # 공통 시스템 프롬프트 강제 + 공통 유저 프롬프트
-            user_prompt = (
-                "Analyze the input text. Use ONLY the allowed labels defined above and return JSON ONLY.\n"
-                f"Text:\n{text}"
-            )
-            rendered = render_chat_prompt(tok, SYS_PROMPT, user_prompt)
+        def extract_first_json(text: str) -> Optional[dict]:
+            import re as _re, json as _json
+            m = _re.search(r'\{.*\}', text, flags=_re.S)
+            if not m:
+                return None
+            try:
+                return _json.loads(m.group(0))
+            except Exception:
+                return None
 
-            inputs = tok(rendered, return_tensors="pt")
-            inputs = {k: v.to(dev) for k,v in inputs.items()}
-            with torch.no_grad():
-                out_ids = model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=True,
-                    temperature=temperature,
-                    top_p=top_p,
-                    pad_token_id=tok.eos_token_id
-                )
-            out_text = tok.decode(out_ids[0], skip_special_tokens=True)
+        def render_chat_prompt(tokenizer, system_prompt: str, user_prompt: str) -> str:
+            try:
+                if hasattr(tokenizer, "chat_template") and tokenizer.chat_template:
+                    messages = [
+                        {"role":"system","content":SYS_PROMPT},
+                        {"role":"user","content":user_prompt}
+                    ]
+                    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            except Exception:
+                pass
+            return f"<<SYS>>\n{SYS_PROMPT.strip()}\n<</SYS>>\n<<USER>>\n{user_prompt.strip()}\n<</USER>>\n<<ASSISTANT>>"
 
-            parsed = extract_first_json(out_text)
-            if not parsed:
-                # JSON 못 뽑았으면 빈 결과
-                w.write(json.dumps({"id": sid, "entities": []}, ensure_ascii=False)+"\n")
-                continue
-
-            has_sensitive = bool(parsed.get("has_sensitive", False))
-            ents_in = parsed.get("entities", []) if has_sensitive else []
-
-            std_entities = []
-            for e in ents_in:
-                raw_type = str(e.get("type","")).strip().upper()
-                value = str(e.get("value","")).strip()
-                if not raw_type or not value: 
+        with open(out_path, "w", encoding="utf-8") as w:
+            for obj in prompts:
+                sid = str(obj.get("id"))
+                text = obj.get("text","")
+                if not text:
+                    w.write(json.dumps({"id": sid, "entities": []}, ensure_ascii=False)+"\n")
                     continue
-                if raw_type not in ALLOWED_LABELS:
-                    if strict_policy == "closest":
-                        m = closest_label(raw_type, ALLOWED_LABELS)
-                        if not m: 
-                            continue
-                        raw_type = m
-                    else:
-                        # drop
+
+                user_prompt = (
+                    "Analyze the input text. Use ONLY the allowed labels defined above and return JSON ONLY.\n"
+                    f"Text:\n{text}"
+                )
+                rendered = render_chat_prompt(tok, SYS_PROMPT, user_prompt)
+
+                inputs = tok(rendered, return_tensors="pt")
+                inputs = {k: v.to(dev) for k,v in inputs.items()}
+
+                with torch.no_grad():
+                    out_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=True,
+                        temperature=temperature,
+                        top_p=top_p,
+                        pad_token_id=tok.eos_token_id
+                    )
+                out_text = tok.decode(out_ids[0], skip_special_tokens=True)
+
+                parsed = extract_first_json(out_text)
+                if not parsed:
+                    w.write(json.dumps({"id": sid, "entities": []}, ensure_ascii=False)+"\n")
+                    continue
+
+                has_sensitive = bool(parsed.get("has_sensitive", False))
+                ents_in = parsed.get("entities", []) if has_sensitive else []
+
+                # ALLOWED 라벨만 허용, value → 모든 발생 위치로 begin/end 매핑
+                def closest_label(label: str, allowed: List[str]) -> Optional[str]:
+                    import difflib as _dif
+                    cand = _dif.get_close_matches(label, allowed, n=1, cutoff=0.6)
+                    return cand[0] if cand else None
+
+                def find_all_spans(text_: str, sub: str) -> List[Tuple[int,int]]:
+                    spans=[]; start=0
+                    if not sub: return spans
+                    while True:
+                        i=text_.find(sub, start)
+                        if i==-1: break
+                        spans.append((i, i+len(sub)))
+                        start=i+len(sub)
+                    return spans
+
+                std_entities = []
+                for e in ents_in:
+                    raw_type = str(e.get("type","")).strip().upper()
+                    value = str(e.get("value","")).strip()
+                    if not raw_type or not value:
                         continue
-                # value → begin/end (모든 발생 위치)
-                for b,e_ in find_all_spans(text, value):
-                    std_entities.append({"begin": b, "end": e_, "label": raw_type})
+                    if raw_type not in ALLOWED_LABELS:
+                        if strict_policy == "closest":
+                            m = closest_label(raw_type, ALLOWED_LABELS)
+                            if not m: 
+                                continue
+                            raw_type = m
+                        else:
+                            continue
+                    for b,e_ in find_all_spans(text, value):
+                        std_entities.append({"begin": b, "end": e_, "label": raw_type})
 
-            w.write(json.dumps({"id": sid, "entities": std_entities}, ensure_ascii=False)+"\n")
+                w.write(json.dumps({"id": sid, "entities": std_entities}, ensure_ascii=False)+"\n")
 
-    print(f"[INFO] 예측 저장: {out_path}")
+        print(f"[INFO] 예측 저장: {out_path}")
+
+    finally:
+        # ✅ 이 모델 사용 끝: 참조 해제 + VRAM 정리
+        try:
+            del model
+        except Exception:
+            pass
+        try:
+            del tok
+        except Exception:
+            pass
+        free_cuda()
 
 # =========================
 # 5) 시각화 & PDF
@@ -514,6 +580,7 @@ def run_one_model(task, prompts_path, answers_path, model_name, model_id,
     latency=(t1-t0)/n_items; throughput=n_items/max(1e-9,(t1-t0))
     metrics=evaluate_core(answers_path, pred_path, match, iou, verbose=True)
     metrics["model"]=model_name; metrics["latency"]=latency; metrics["throughput"]=throughput
+    free_cuda()
     return metrics
 
 def main():
@@ -583,4 +650,5 @@ def main():
 
 if __name__=="__main__":
     main()
+
 
