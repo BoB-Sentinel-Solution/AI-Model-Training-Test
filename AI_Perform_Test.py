@@ -572,7 +572,22 @@ def infer_generation(
 # =========================
 # 5) 시각화 & PDF
 # =========================
+def setup_korean_font_for_matplotlib():
+    # 그래프 한글 깨짐 방지: 설치된 한글 폰트(NanumGothic 등) 있으면 자동 지정
+    import matplotlib
+    import matplotlib.font_manager as fm
+    preferred = ["NanumGothic", "Noto Sans CJK KR", "Malgun Gothic", "AppleGothic"]
+    installed = {f.name for f in fm.fontManager.ttflist}
+    for name in preferred:
+        if name in installed:
+            matplotlib.rcParams["font.family"] = name
+            matplotlib.rcParams["axes.unicode_minus"] = False
+            print(f"[INFO] Matplotlib font set to: {name}")
+            return
+    print("[WARN] No Korean font found for Matplotlib; Korean text in charts may be broken.")
+
 def save_bar_f1(summary_list, out_png):
+    setup_korean_font_for_matplotlib()
     import matplotlib.pyplot as plt
     models=[m["model"] for m in summary_list]; f1=[m["f1_micro"] for m in summary_list]
     plt.figure(figsize=(9,5)); plt.bar(models,f1); plt.ylim(0,1)
@@ -581,6 +596,7 @@ def save_bar_f1(summary_list, out_png):
     plt.tight_layout(); plt.savefig(out_png,dpi=150); plt.close()
 
 def save_radar_per_label(models_pl, labels, out_png, title="라벨별 F1 비교(전/후)"):
+    setup_korean_font_for_matplotlib()
     import math, matplotlib.pyplot as plt
     def f1_vec(per_label):
         d={x["label"]:x["f1"] for x in per_label}; return [d.get(l,0.0) for l in labels]
@@ -590,7 +606,7 @@ def save_radar_per_label(models_pl, labels, out_png, title="라벨별 F1 비교(
     for m in models_pl:
         vals=f1_vec(m["per_label"]); vals+=vals[:1]
         ax.plot(angles, vals, linewidth=1); ax.fill(angles, vals, alpha=0.1, label=m["name"])
-    plt.title(title); plt.legend(loc="lower left", bbox_to_anchor=(0.0,-0.15), ncol=2)
+    plt.title(title); plt.legend(loc="lower left", bbox_to_anchor(0.0,-0.15), ncol=2)
     plt.tight_layout(); plt.savefig(out_png,dpi=150,bbox_inches="tight"); plt.close()
 
 def build_pdf_report(out_pdf, summary_list, per_label_union):
@@ -598,7 +614,29 @@ def build_pdf_report(out_pdf, summary_list, per_label_union):
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-    doc=SimpleDocTemplate(out_pdf,pagesize=A4); styles=getSampleStyleSheet(); story=[]
+
+    # 🔤 ReportLab 한글 폰트 등록 (NanumGothic)
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    nanum_path = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
+
+    doc=SimpleDocTemplate(out_pdf,pagesize=A4)
+    styles=getSampleStyleSheet()
+
+    try:
+        if os.path.exists(nanum_path):
+            pdfmetrics.registerFont(TTFont("NanumGothic", nanum_path))
+            styles['Normal'].fontName = "NanumGothic"
+            styles['Title'].fontName = "NanumGothic"
+            styles['Heading2'].fontName = "NanumGothic"
+            styles['Heading3'].fontName = "NanumGothic"
+            print("[INFO] ReportLab font set to NanumGothic")
+        else:
+            print("[WARN] NanumGothic.ttf not found; Korean in PDF may be broken.")
+    except Exception as e:
+        print(f"[WARN] ReportLab font registration failed: {e}")
+
+    story=[]
     story.append(Paragraph("<b>민감정보 탐지 모델 성능 비교 리포트</b>", styles['Title'])); story.append(Spacer(1, 12))
     data=[["모델","P_micro","R_micro","F1_micro","F1_macro","Latency(s)","Throughput"]]
     for s in summary_list:
