@@ -95,10 +95,51 @@ def load_jsonl(path: str) -> List[dict]:
     return items
 
 def load_jsonl_by_id(path: str) -> Dict[str, dict]:
-    data = {}
+    """
+    표준 포맷과 기존(문자열로 감싼) 포맷을 모두 지원:
+      1) 표준: {"id":"...","entities":[{"begin":..,"end":..,"label":"..."}]}
+      2) 기존: {"id":"...","answer":"{\"text\":\"...\",\"entities\":[...]}"}  # answer 안에 JSON 문자열
+    반환값은 항상 {"id":..., "entities":[...]} 형태로 정규화해서 돌려준다.
+    """
+    def _sanitize_entities(ents):
+        out = []
+        for e in ents or []:
+            try:
+                b = int(e.get("begin"))
+                ed = int(e.get("end"))
+                lab = str(e.get("label"))
+                out.append({"begin": b, "end": ed, "label": lab})
+            except Exception:
+                # begin/end/label 중 하나라도 없거나 형식이 이상하면 스킵
+                continue
+        return out
+
+    data: Dict[str, dict] = {}
     for obj in load_jsonl(path):
         sid = str(obj.get("id"))
-        data[sid] = obj
+
+        # 1) 표준 포맷이면 그대로 사용
+        if isinstance(obj.get("entities"), list):
+            data[sid] = {"id": sid, "entities": _sanitize_entities(obj["entities"])}
+            continue
+
+        # 2) 기존 포맷: answer에 문자열 JSON이 들어있는 경우
+        ans = obj.get("answer")
+        if isinstance(ans, str):
+            try:
+                inner = json.loads(ans)  # 문자열 → dict
+                ents = inner.get("entities", [])
+                data[sid] = {"id": sid, "entities": _sanitize_entities(ents)}
+                continue
+            except Exception:
+                # 파싱 실패 시 빈 엔티티로 처리 (경고만)
+                print(f"[WARN] answers parse failed for id={sid}: invalid JSON in 'answer'")
+                data[sid] = {"id": sid, "entities": []}
+                continue
+
+        # 3) 어떤 포맷도 아니면 안전하게 빈 엔티티로
+        data[sid] = {"id": sid, "entities": []}
+
     return data
 
 def safe_div(a: float, b: float) -> float:
@@ -542,3 +583,4 @@ def main():
 
 if __name__=="__main__":
     main()
+
