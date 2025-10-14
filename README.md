@@ -75,16 +75,12 @@ python3 model_performance_test.py \
 
 ## AI_Perform_Test.py 사용법 (모델 성능 지표 비교 테스트)
 ```
-python AI_Perform_Test.py \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+python3 AI_Perform_Test.py \
   --task generation \
-  --prompts /mnt/data/AI_Test_Prompt.jsonl \
-  --answers /mnt/data/AI_Test_Answer.jsonl \
-  --models-json '{
-    "3B_before":"Qwen/Qwen2.5-3B-Instruct",
-    "3B_after":"./fine_tuned/qwen2.5-3b-ft",
-    "7B_before":"Qwen/Qwen2.5-7B-Instruct",
-    "7B_after":"./fine_tuned/qwen2.5-7b-ft"
-  }' \
+  --prompts ./AI_Test_Prompt.jsonl \
+  --answers ./AI_Test_Answer.jsonl \
+  --models-json '{"3B_before":"Qwen/Qwen2.5-3B-Instruct","3B_after":"./runs/qwen3b_sft_merged","7B_before":"Qwen/Qwen2.5-7B-Instruct","7B_after":"./runs/qwen7b_sft_merged"}' \
   --device cuda \
   --match exact \
   --strict-policy drop \
