@@ -19,6 +19,16 @@ from typing import Dict, List, Tuple, Optional
 import gc
 import torch
 
+# ==== 전역 Matplotlib 한글 폰트 보장 ====
+from matplotlib import font_manager as fm, pyplot as plt
+try:
+    fm.fontManager.addfont("/usr/share/fonts/truetype/nanum/NanumGothic.ttf")
+except Exception:
+    pass
+plt.rcParams["font.family"] = "NanumGothic"
+plt.rcParams["axes.unicode_minus"] = False
+# ======================================
+
 def free_cuda():
     """강제 GC + CUDA 캐시/IP C 청소 (모델 전환 전/후 호출)"""
     gc.collect()
@@ -301,7 +311,7 @@ def extract_first_json(text: str) -> Optional[dict]:
         if ch == '{':
             if not stack:
                 start = i
-            stack.append('{')
+            stack.append('{')  # ✅ 오타 수정
         elif ch == '}':
             if stack:
                 stack.pop()
@@ -573,9 +583,22 @@ def infer_generation(
 # 5) 시각화 & PDF
 # =========================
 def setup_korean_font_for_matplotlib():
-    # 그래프 한글 깨짐 방지: 설치된 한글 폰트(NanumGothic 등) 있으면 자동 지정
+    # (보조) 그래프 한글 깨짐 방지: 설치된 한글 폰트(NanumGothic 등) 등록/지정
     import matplotlib
     import matplotlib.font_manager as fm
+    nanum_path = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
+    try:
+        if os.path.exists(nanum_path):
+            try:
+                fm.fontManager.addfont(nanum_path)
+            except Exception:
+                pass
+            matplotlib.rcParams["font.family"] = "NanumGothic"
+            matplotlib.rcParams["axes.unicode_minus"] = False
+            print("[INFO] Matplotlib font set to NanumGothic")
+            return
+    except Exception:
+        pass
     preferred = ["NanumGothic", "Noto Sans CJK KR", "Malgun Gothic", "AppleGothic"]
     installed = {f.name for f in fm.fontManager.ttflist}
     for name in preferred:
@@ -606,7 +629,7 @@ def save_radar_per_label(models_pl, labels, out_png, title="라벨별 F1 비교(
     for m in models_pl:
         vals=f1_vec(m["per_label"]); vals+=vals[:1]
         ax.plot(angles, vals, linewidth=1); ax.fill(angles, vals, alpha=0.1, label=m["name"])
-    plt.title(title); plt.legend(loc="lower left", bbox_to_anchor(0.0,-0.15), ncol=2)
+    plt.title(title); plt.legend(loc="lower left", bbox_to_anchor=(0.0,-0.15), ncol=2)
     plt.tight_layout(); plt.savefig(out_png,dpi=150,bbox_inches="tight"); plt.close()
 
 def build_pdf_report(out_pdf, summary_list, per_label_union):
@@ -692,7 +715,7 @@ def build_pdf_report(out_pdf, summary_list, per_label_union):
 def run_one_model(task, prompts_path, answers_path, model_name, model_id,
                   outdir, device, match, iou, span_only=False, **gen_kwargs):
     os.makedirs(outdir, exist_ok=True)
-    pred_path=os.path.join(outdir,f"{model_name}_predictions.jsonl")
+    pred_path=os.path.join(outdir,f"{model_name}_predictions.jsonl")  # ✅ 여분의 } 제거
     t0=time.time()
     if task=="token":
         infer_token_classification(prompts_path, model_id, pred_path,
@@ -777,7 +800,7 @@ def main():
                 radar_models.append({"name":key,"per_label":s["per_label"]}); break
     radar_png=os.path.join(args.outdir,"per_label_radar.png")
     if len(radar_models)>=2 and len(all_labels)>=3:
-        save_radar_per_label(radar_models, all_labels, radar_png, title="라벨별 F1 레이더(튜닝 전/후 비교)")
+        save_radar_per_label(radar_models, all_labels, radar_png, title="라벨별 F1 레이더(전/후 비교)")
     out_pdf=os.path.join(args.outdir,"evaluation_report.pdf")
     build_pdf_report(out_pdf, summaries, all_labels)
     print(f"\n✅ 완료: 결과 폴더 = {args.outdir}")
