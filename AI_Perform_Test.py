@@ -5,6 +5,7 @@
 - 공통 시스템 프롬프트(SYS_PROMPT) 강제 적용 (모델 무관)
 - 모델 출력(JSON: has_sensitive/entities[type,value]) → 평가 포맷(begin/end/label) 자동 변환
 - Precision / Recall / F1 (Micro/Macro), 라벨별 상세, Latency/Throughput, 향상률, 그래프, PDF
+- (--save-steps) 단계별 디버그 로그: <모델명>_debug.jsonl (raw_output/parsed/filter_actions/filtered_entities/std_entities)
 """
 
 import argparse
@@ -28,7 +29,7 @@ def free_cuda():
             pass
 
 # =========================
-# 1) 공통 시스템 프롬프트 (네가 준 버전)
+# 1) 공통 시스템 프롬프트
 # =========================
 SYS_PROMPT = """
 You are a strict detector for sensitive entities (PII and secrets).
@@ -123,7 +124,6 @@ def load_jsonl_by_id(path: str) -> Dict[str, dict]:
                 lab = str(e.get("label"))
                 out.append({"begin": b, "end": ed, "label": lab})
             except Exception:
-                # begin/end/label 중 하나라도 없거나 형식이 이상하면 스킵
                 continue
         return out
 
@@ -131,12 +131,10 @@ def load_jsonl_by_id(path: str) -> Dict[str, dict]:
     for obj in load_jsonl(path):
         sid = str(obj.get("id"))
 
-        # 1) 표준 포맷이면 그대로 사용
         if isinstance(obj.get("entities"), list):
             data[sid] = {"id": sid, "entities": _sanitize_entities(obj["entities"])}
             continue
 
-        # 2) 기존 포맷: answer에 문자열 JSON이 들어있는 경우
         ans = obj.get("answer")
         if isinstance(ans, str):
             try:
@@ -145,12 +143,10 @@ def load_jsonl_by_id(path: str) -> Dict[str, dict]:
                 data[sid] = {"id": sid, "entities": _sanitize_entities(ents)}
                 continue
             except Exception:
-                # 파싱 실패 시 빈 엔티티로 처리 (경고만)
                 print(f"[WARN] answers parse failed for id={sid}: invalid JSON in 'answer'")
                 data[sid] = {"id": sid, "entities": []}
                 continue
 
-        # 3) 어떤 포맷도 아니면 안전하게 빈 엔티티로
         data[sid] = {"id": sid, "entities": []}
 
     return data
@@ -223,8 +219,8 @@ def evaluate_core(answers_path: str, predictions_path: str, match: str, iou: flo
     recall=safe_div(total_tp,total_tp+total_fn)
     f1=safe_div(2*precision*recall,precision+recall) if (precision+recall) else 0.0
     labels=sorted({lab for (_,lab) in {(t,l) for (t,l) in per_label.keys()}})
-    per_label_metrics=[]; p_list=r_list=f1_list=[],[],[]
     p_list=[]; r_list=[]; f1_list=[]
+    per_label_metrics=[]
     for lab in labels:
         tp_l=per_label.get(("TP",lab),0); fp_l=per_label.get(("FP",lab),0); fn_l=per_label.get(("FN",lab),0)
         p_l=safe_div(tp_l,tp_l+fp_l); r_l=safe_div(tp_l,tp_l+fn_l); f1_l=safe_div(2*p_l*r_l,p_l+r_l) if (p_l+r_l) else 0.0
@@ -370,14 +366,13 @@ def infer_generation(
     prompts_path: str, model_id: str, out_path: str,
     device: Optional[str] = None, max_new_tokens: int = 256,
     temperature: float = 0.2, top_p: float = 0.9,
-    strict_policy: str = "drop"  # "drop" | "closest"
+    strict_policy: str = "drop", save_steps: bool = False
 ):
     """
     모델 출력: {"has_sensitive": bool, "entities":[{"type":LABEL,"value":SUBSTR}]}
     → 평가 포맷: {"id":..., "entities":[{"begin":int,"end":int,"label":LABEL}]}
     """
     from transformers import AutoTokenizer, AutoModelForCausalLM
-    import torch
 
     # ✅ 새 모델 올리기 전에 남은 VRAM 깔끔히 청소
     free_cuda()
@@ -386,11 +381,9 @@ def infer_generation(
     tok = AutoTokenizer.from_pretrained(model_id, use_fast=True, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
     model.eval()
-    
     # pad 토큰 안전 설정 (없으면 eos로 대체)
     if tok.pad_token_id is None and tok.eos_token_id is not None:
         tok.pad_token = tok.eos_token
-
 
     if device == "cuda" or (device is None and torch.cuda.is_available()):
         model.to("cuda"); dev = "cuda"
@@ -400,12 +393,33 @@ def infer_generation(
     try:
         prompts = load_jsonl(prompts_path)
 
+        # 디버그 파일 준비
+        debug_path = os.path.join(
+            os.path.dirname(out_path),
+            f"{os.path.splitext(os.path.basename(out_path))[0].replace('_predictions','')}_debug.jsonl"
+        )
+        dbg_f = open(debug_path, "w", encoding="utf-8") if save_steps else None
+
         with open(out_path, "w", encoding="utf-8") as w:
             for obj in prompts:
                 sid = str(obj.get("id"))
                 text = obj.get("text","")
+
+                # 디버그 레코드 시작
+                debug_rec = {"id": sid}
+
                 if not text:
                     w.write(json.dumps({"id": sid, "entities": []}, ensure_ascii=False)+"\n")
+                    if dbg_f:
+                        debug_rec.update({
+                            "raw_output": "",
+                            "parsed": None,
+                            "filter_actions": [],
+                            "filtered_entities": [],
+                            "std_entities": [],
+                            "note": "empty text"
+                        })
+                        dbg_f.write(json.dumps(debug_rec, ensure_ascii=False) + "\n")
                     continue
 
                 user_prompt = (
@@ -423,7 +437,6 @@ def infer_generation(
                 )
                 inputs = {k: v.to(dev) for k, v in inputs.items()}
 
-
                 with torch.inference_mode():
                     out_ids = model.generate(
                         **inputs,
@@ -437,53 +450,87 @@ def infer_generation(
                         use_cache=True
                     )
 
-
                 out_text = tok.decode(out_ids[0], skip_special_tokens=True)
+                if dbg_f:
+                    debug_rec["raw_output"] = out_text
 
                 parsed = extract_first_json(out_text)
+                if dbg_f:
+                    debug_rec["parsed"] = parsed
+
                 if not parsed:
+                    # 파싱 실패: 예측은 빈 엔티티로
                     w.write(json.dumps({"id": sid, "entities": []}, ensure_ascii=False)+"\n")
+                    if dbg_f:
+                        debug_rec.update({
+                            "filter_actions": [],
+                            "filtered_entities": [],
+                            "std_entities": [],
+                            "note": "json parse failed"
+                        })
+                        dbg_f.write(json.dumps(debug_rec, ensure_ascii=False) + "\n")
                     continue
 
                 has_sensitive = bool(parsed.get("has_sensitive", False))
                 ents_in = parsed.get("entities", []) if has_sensitive else []
 
-                # ALLOWED 라벨만 허용, value → 모든 발생 위치로 begin/end 매핑
-                def closest_label(label: str, allowed: List[str]) -> Optional[str]:
-                    import difflib as _dif
-                    cand = _dif.get_close_matches(label, allowed, n=1, cutoff=0.6)
-                    return cand[0] if cand else None
-
-                def find_all_spans(text_: str, sub: str) -> List[Tuple[int,int]]:
-                    spans=[]; start=0
-                    if not sub: return spans
-                    while True:
-                        i=text_.find(sub, start)
-                        if i==-1: break
-                        spans.append((i, i+len(sub)))
-                        start=i+len(sub)
-                    return spans
-
-                std_entities = []
+                # 허용 라벨 필터링/보정 + 행동 로그
+                filter_actions = []
+                filtered_entities = []
                 for e in ents_in:
-                    raw_type = str(e.get("type","")).strip().upper()
+                    orig_type = str(e.get("type","")).strip()
+                    norm_type = orig_type.upper()
                     value = str(e.get("value","")).strip()
-                    if not raw_type or not value:
+                    if not norm_type or not value:
+                        # 값이 비면 로그도 남기지 않고 스킵
                         continue
-                    if raw_type not in ALLOWED_LABELS:
-                        if strict_policy == "closest":
-                            m = closest_label(raw_type, ALLOWED_LABELS)
-                            if not m: 
-                                continue
-                            raw_type = m
-                        else:
-                            continue
-                    for b,e_ in find_all_spans(text, value):
-                        std_entities.append({"begin": b, "end": e_, "label": raw_type})
 
+                    action = "kept"
+                    final_type = norm_type
+                    if norm_type not in ALLOWED_LABELS:
+                        if strict_policy == "closest":
+                            mapped = closest_label(norm_type, ALLOWED_LABELS)
+                            if mapped:
+                                action = f"mapped:{norm_type}->{mapped}"
+                                final_type = mapped
+                            else:
+                                action = "dropped"
+                        else:
+                            action = "dropped"
+
+                    filter_actions.append({
+                        "source_type": orig_type,
+                        "normalized": norm_type,
+                        "final_type": (final_type if action!="dropped" else None),
+                        "value": value,
+                        "action": action
+                    })
+                    if action != "dropped":
+                        filtered_entities.append({"type": final_type, "value": value})
+
+                # 스팬 매핑(begin/end)
+                std_entities = []
+                for fe in filtered_entities:
+                    final_type = fe["type"]; value = fe["value"]
+                    for b, e_ in find_all_spans(text, value):
+                        std_entities.append({"begin": b, "end": e_, "label": final_type})
+
+                # 최종 예측 저장 (평가 포맷)
                 w.write(json.dumps({"id": sid, "entities": std_entities}, ensure_ascii=False)+"\n")
 
+                # 디버그 저장
+                if dbg_f:
+                    debug_rec.update({
+                        "filter_actions": filter_actions,
+                        "filtered_entities": filtered_entities,
+                        "std_entities": std_entities
+                    })
+                    dbg_f.write(json.dumps(debug_rec, ensure_ascii=False) + "\n")
+
         print(f"[INFO] 예측 저장: {out_path}")
+        if dbg_f:
+            dbg_f.close()
+            print(f"[INFO] 디버그 저장: {debug_path}")
 
     finally:
         # ✅ 이 모델 사용 끝: 참조 해제 + VRAM 정리
@@ -595,7 +642,8 @@ def run_one_model(task, prompts_path, answers_path, model_name, model_id,
                          max_new_tokens=gen_kwargs.get("max_new_tokens",256),
                          temperature=gen_kwargs.get("temperature",0.2),
                          top_p=gen_kwargs.get("top_p",0.9),
-                         strict_policy=gen_kwargs.get("strict_policy","drop"))
+                         strict_policy=gen_kwargs.get("strict_policy","drop"),
+                         save_steps=gen_kwargs.get("save_steps", False))
     t1=time.time()
     n_items=len(load_jsonl(prompts_path)) or 1
     latency=(t1-t0)/n_items; throughput=n_items/max(1e-9,(t1-t0))
@@ -621,6 +669,8 @@ def main():
     ap.add_argument("--top-p", type=float, default=0.9)
     ap.add_argument("--strict-policy", choices=["drop","closest"], default="drop",
                     help="허용외 라벨 처리: drop=버림, closest=가장 가까운 허용라벨로 보정")
+    ap.add_argument("--save-steps", action="store_true",
+                    help="단계별 결과를 하나의 debug.jsonl로 함께 저장")
     # token
     ap.add_argument("--aggregation", default="simple")
     ap.add_argument("--batch-size", type=int, default=8)
@@ -641,7 +691,7 @@ def main():
                         match=args.match, iou=args.iou,
                         aggregation=args.aggregation, batch_size=args.batch_size,
                         max_new_tokens=args.max_new_tokens, temperature=args.temperature,
-                        top_p=args.top_p, strict_policy=args.strict_policy)
+                        top_p=args.top_p, strict_policy=args.strict_policy, save_steps=args.save_steps)
         summaries.append(m)
 
     print("\n\n📋 [성능 요약표]")
@@ -666,11 +716,9 @@ def main():
     build_pdf_report(out_pdf, summaries, all_labels)
     print(f"\n✅ 완료: 결과 폴더 = {args.outdir}")
     print(f"   - 예측 파일: <모델명>_predictions.jsonl")
+    print(f"   - 디버그 파일(옵션): <모델명>_debug.jsonl  (--save-steps 사용 시)")
     print(f"   - 그래프: compare_F1_micro.png, per_label_radar.png")
     print(f"   - PDF 리포트: evaluation_report.pdf")
 
 if __name__=="__main__":
     main()
-
-
-
