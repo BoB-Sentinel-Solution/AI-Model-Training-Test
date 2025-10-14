@@ -1,7 +1,12 @@
 # test_print_only.py
 # -*- coding: utf-8 -*-
-import argparse, json, time, threading
-from typing import Optional, Dict, Any
+import argparse
+import json
+import time
+import threading
+import re
+from typing import Optional, Dict, Any, List
+
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 
@@ -115,14 +120,139 @@ DEFAULT_PROMPTS = [
     "동네 칼국수집에서 점심을 먹었는데 면발이 쫄깃하고 국물이 시원했어. 김치도 잘 익어서 맛있더라. 양도 푸짐해서 배불리 먹었지. 주인 할머니가 친절하게 반찬도 더 주셨어. 단골이 될 것 같아."
 ]
 
+
+# --------- 출력 정리/파싱 보강 유틸 ---------
+CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+
+def sanitize_text(s: str) -> str:
+    """JSON 파싱을 방해하는 제어문자 정리 및 트리밍"""
+    return (s.replace("\u2028", "\n")
+             .replace("\u2029", "\n")
+             .replace("\ufeff", "")).strip()
+
+def strip_role_headers_shallow(s: str) -> str:
+    """앞쪽의 단일 role 라벨(system/user/assistant)만 정리 (과도 제거 방지)"""
+    s = s.lstrip()
+    for prefix in ("system\n", "user\n", "assistant\n"):
+        if s.startswith(prefix):
+            s = s[len(prefix):].lstrip()
+    return s
+
+def find_codefence_json_blocks(s: str) -> List[str]:
+    return [m.group(1).strip() for m in CODE_FENCE_RE.finditer(s)]
+
+def find_all_top_level_json_blocks(s: str) -> List[str]:
+    """문자열 내 최상위 { ... } 블록을 '모두' 수집 (문자열/이스케이프 인식)"""
+    blocks = []
+    first = s.find("{")
+    if first == -1:
+        return blocks
+    level = 0
+    in_str = False
+    esc = False
+    start_idx = None
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        else:
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                if level == 0:
+                    start_idx = i
+                level += 1
+            elif ch == "}":
+                level -= 1
+                if level == 0 and start_idx is not None:
+                    blocks.append(s[start_idx:i+1].strip())
+                    start_idx = None
+    return blocks
+
+def find_last_top_level_json_backward(s: str) -> Optional[str]:
+    """마지막 '}'부터 역방향으로 매칭해 마지막 최상위 JSON 블록을 복원 (백업용)"""
+    end = s.rfind("}")
+    if end == -1:
+        return None
+    level = 0
+    in_str = False
+    esc = False
+    for i in range(end, -1, -1):
+        ch = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        else:
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "}":
+                level += 1
+            elif ch == "{":
+                level -= 1
+                if level == 0:
+                    return s[i:end+1].strip()
+    return None
+
+def extract_best_json(s: str) -> Optional[str]:
+    """우선순위: (1) 코드펜스 '마지막' → (2) 평문 블록 '마지막' → (3) 역방향 매칭"""
+    s = sanitize_text(strip_role_headers_shallow(s))
+    cf = find_codefence_json_blocks(s)
+    if cf:
+        return cf[-1]
+    blocks = find_all_top_level_json_blocks(s)
+    if blocks:
+        return blocks[-1]
+    return find_last_top_level_json_backward(s)
+
+# --------- 통계 유틸 ---------
+def mean(xs: List[float]) -> Optional[float]:
+    return (sum(xs) / len(xs)) if xs else None
+
+def pctl(xs: List[float], q: float) -> Optional[float]:
+    """0<=q<=1, 선형보간 pctl"""
+    if not xs:
+        return None
+    xs_sorted = sorted(xs)
+    if len(xs_sorted) == 1:
+        return xs_sorted[0]
+    pos = q * (len(xs_sorted) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(xs_sorted) - 1)
+    frac = pos - lo
+    return xs_sorted[lo] * (1 - frac) + xs_sorted[hi] * frac
+
+# --------- 추론 1회 ---------
 def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, Any]:
+    t0 = time.perf_counter()
+
     messages = [
         {"role": "system", "content": SYS_PROMPT},
         {"role": "user", "content": prompt}
     ]
-    inputs = tok.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True)
-    inputs = inputs.to(model.device)
 
+    # 토크나이즈 + 템플릿 적용
+    t_enc0 = time.perf_counter()
+    inputs = tok.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True)
+    t_enc1 = time.perf_counter()
+
+    # 디바이스로 이동
+    t_h2d0 = time.perf_counter()
+    inputs = inputs.to(model.device)
+    t_h2d1 = time.perf_counter()
+
+    # 스트리머/생성 인자 준비
     streamer = TextIteratorStreamer(tok, skip_special_tokens=True, decode_kwargs={"skip_special_tokens": True})
     gen_kwargs = dict(
         inputs=inputs,
@@ -132,17 +262,22 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
         streamer=streamer,
     )
 
-    # run generate on a background thread to use the streamer
+    # 프롬프트 준비 시간
+    start = time.perf_counter()
+    prep_ms = (start - t0) * 1000.0
+    encode_ms = (t_enc1 - t_enc0) * 1000.0
+    h2d_ms = (t_h2d1 - t_h2d0) * 1000.0
+
+    # 스트리밍 소비자
     first_token_time: Optional[float] = None
     raw_chunks = []
-    start = time.perf_counter()
 
     def _consume():
         nonlocal first_token_time
-        for i, token_text in enumerate(streamer):
-            if first_token_time is None:
+        for _tok in streamer:
+            if first_token_time is None and _tok:
                 first_token_time = time.perf_counter()
-            raw_chunks.append(token_text)
+            raw_chunks.append(_tok)
 
     t = threading.Thread(target=_consume)
     t.start()
@@ -153,12 +288,12 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
     t.join()
     end = time.perf_counter()
 
-    raw_out = "".join(raw_chunks).strip()
+    raw_out = sanitize_text("".join(raw_chunks))
+
     total_ms = (end - start) * 1000.0
     ttft_ms = (first_token_time - start) * 1000.0 if first_token_time else None
 
-    # token/s 계산 (생성 토큰 기준)
-    # 입력/출력 토큰 길이 측정
+    # 생성 토큰 수/토큰속도
     out_ids = tok(raw_out, return_tensors="pt")["input_ids"][0]
     gen_tokens = out_ids.size(0)
     tok_s = None
@@ -167,28 +302,31 @@ def infer_once(tok, model, prompt: str, max_new_tokens: int = 256) -> Dict[str, 
         if duration_gen > 0:
             tok_s = gen_tokens / duration_gen
 
-    # JSON 파싱 시도
+    # JSON 파싱 (후처리 시간 측정)
+    post0 = time.perf_counter()
     parsed = None
     try:
-        # 모델이 앞말 덧붙였을 수 있으니 중괄호 첫/끝 구간만 salvage
-        s = raw_out
-        l = s.find("{")
-        r = s.rfind("}")
-        if l != -1 and r != -1 and r > l:
-            parsed = json.loads(s[l:r+1])
-        else:
-            parsed = json.loads(s)  # 혹시 순수 JSON이면
+        candidate = extract_best_json(raw_out)
+        if candidate:
+            parsed = json.loads(candidate)
     except Exception:
         parsed = None
+    post1 = time.perf_counter()
+    post_ms = (post1 - post0) * 1000.0
 
     return {
         "raw": raw_out,
         "json": parsed,
+        "prep_ms": prep_ms,
+        "encode_ms": encode_ms,
+        "h2d_ms": h2d_ms,
         "ttft_ms": ttft_ms,
         "total_ms": total_ms,
-        "tok_s": tok_s
+        "tok_s": tok_s,
+        "post_ms": post_ms,
     }
 
+# --------- 메인 ---------
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_dir", required=True, help="Merged model dir (e.g., runs/qwen7b_sft_merged)")
@@ -203,17 +341,71 @@ def main():
 
     prompts = DEFAULT_PROMPTS[: args.limit or None]
 
+    # 지표 누적 저장소
+    metrics = {
+        "prep_ms": [],
+        "encode_ms": [],
+        "h2d_ms": [],
+        "ttft_ms": [],     # None 제외
+        "tok_s": [],       # None 제외
+        "total_ms": [],
+        "post_ms": [],
+        "e2e_ms": [],
+    }
+
     for i, p in enumerate(prompts, 1):
         r = infer_once(tok, model, p, max_new_tokens=args.max_new_tokens)
+
+        # 엔드투엔드 시간
+        prep_ms = r.get("prep_ms") or 0.0
+        total_ms = r.get("total_ms") or 0.0
+        post_ms = r.get("post_ms") or 0.0
+        e2e_ms = prep_ms + total_ms + post_ms
+
+        # 누적 (None은 제외)
+        if r.get("prep_ms") is not None:   metrics["prep_ms"].append(r["prep_ms"])
+        if r.get("encode_ms") is not None: metrics["encode_ms"].append(r["encode_ms"])
+        if r.get("h2d_ms") is not None:    metrics["h2d_ms"].append(r["h2d_ms"])
+        if r.get("ttft_ms") is not None:   metrics["ttft_ms"].append(r["ttft_ms"])
+        if r.get("tok_s") is not None:     metrics["tok_s"].append(r["tok_s"])
+        metrics["total_ms"].append(total_ms)
+        metrics["post_ms"].append(post_ms)
+        metrics["e2e_ms"].append(e2e_ms)
+
         print(f"\n--- TEST #{i} ---")
         print("prompt:", p)
-        print(
-            "ttft_ms:", f"{r['ttft_ms']:.2f}" if r['ttft_ms'] else "NA",
-            "| tok/s:", f"{r['tok_s']:.2f}" if r['tok_s'] else "NA",
-            "| total_ms:", f"{r['total_ms']:.2f}"
-        )
         print("output:", r["raw"])
         print("parsed_json:", json.dumps(r["json"], ensure_ascii=False) if r["json"] is not None else "None")
+
+        # parsed_json 이후, 가독성 좋은 타이밍 블록
+        print("\n[Timing]")
+        print(f"  준비시간(prep_ms): {r.get('prep_ms'):.2f}" if r.get("prep_ms") is not None else "  준비시간(prep_ms): NA")
+        print(f"  인코딩시간(encode_ms): {r.get('encode_ms'):.2f}" if r.get("encode_ms") is not None else "  인코딩시간(encode_ms): NA")
+        print(f"  GPU전송시간(h2d_ms): {r.get('h2d_ms'):.2f}" if r.get("h2d_ms") is not None else "  GPU전송시간(h2d_ms): NA")
+        print(f"  첫토큰대기(TTFT, ttft_ms): {r['ttft_ms']:.2f}" if r.get("ttft_ms") is not None else "  첫토큰대기(TTFT, ttft_ms): NA")
+        print(f"  생성속도(tok/s): {r['tok_s']:.2f}" if r.get("tok_s") is not None else "  생성속도(tok/s): NA")
+        print(f"  생성전체시간(total_ms): {total_ms:.2f}")
+        print(f"  후처리시간(post_ms): {post_ms:.2f}")
+        print(f"  전체응답시간(e2e_ms): {e2e_ms:.2f}")
+
+    # ---- 전체 요약 (평균, p95) ----
+    def _fmt_stat(name: str, xs: List[float]) -> str:
+        avg = mean(xs)
+        p95 = pctl(xs, 0.95)
+        n = len(xs)
+        if avg is None:
+            return f"  {name}: N=0"
+        return f"  {name}: N={n}, avg={avg:.2f}, p95={p95:.2f}"
+
+    print("\n===== SUMMARY (avg, p95) =====")
+    print(_fmt_stat("prep_ms",   metrics["prep_ms"]))
+    print(_fmt_stat("encode_ms", metrics["encode_ms"]))
+    print(_fmt_stat("h2d_ms",    metrics["h2d_ms"]))
+    print(_fmt_stat("ttft_ms",   metrics["ttft_ms"]))
+    print(_fmt_stat("tok_s",     metrics["tok_s"]))
+    print(_fmt_stat("total_ms",  metrics["total_ms"]))
+    print(_fmt_stat("post_ms",   metrics["post_ms"]))
+    print(_fmt_stat("e2e_ms",    metrics["e2e_ms"]))
 
 if __name__ == "__main__":
     main()
