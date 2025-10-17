@@ -415,20 +415,28 @@ def infer_generation(
 
     print(f"[INFO] generation 모델 로딩: {model_id}")
     tok = AutoTokenizer.from_pretrained(model_id, use_fast=True, trust_remote_code=True)
-
-        # ★ 추가: 안전한 최대 길이 강제 (8192 권장, 더 작게 4096도 OK)
+    
+    # ★ pad 토큰 없으면 eos를 pad로 지정 (Falcon 등 일부 모델은 pad 없음)
+    if tok.pad_token_id is None and getattr(tok, "eos_token_id", None) is not None:
+        tok.pad_token = tok.eos_token
+    
+    # ★ 안전한 최대 길이 강제 (8192 권장, 환경에 따라 4096도 OK)
     safe_max = 8192
     try:
         tok.model_max_length = min(int(getattr(tok, "model_max_length", safe_max) or safe_max), safe_max)
     except Exception:
         tok.model_max_length = safe_max
-
-    # ★ 추가: fast tokenizer 내부에도 트렁케이션 미리 켜두기(보수적 이중 안전책)
+    
+    # ★ fast tokenizer 내부에도 트렁케이션 미리 켜두기(보수적 이중 안전책)
     try:
         if hasattr(tok, "_tokenizer"):
             tok._tokenizer.enable_truncation(tok.model_max_length)
     except Exception:
         pass
+    
+    tok.truncation_side = "left"
+    tok.padding_side = "left"
+
     
     # 전역 BF16 (CUDA 있을 때), CPU일 땐 기본 dtype 유지
     torch_dtype = torch.bfloat16 if torch.cuda.is_available() else None
@@ -436,10 +444,15 @@ def infer_generation(
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         trust_remote_code=True,
-        torch_dtype=torch_dtype,     # ★ BF16로 로드
-        low_cpu_mem_usage=True       # ★ CPU 피크 메모리 절약
+        torch_dtype=torch_dtype,   # BF16 로드 (CUDA일 때)
+        low_cpu_mem_usage=True
     )
     model.eval()
+
+    # ★ Falcon 레거시 remote code 버그 회피: KV 캐시 비활성화
+    if "falcon" in model_id.lower():
+        model.config.use_cache = False
+
 
     # pad 토큰 안전 설정 (없으면 eos로 대체)
     if tok.pad_token_id is None and tok.eos_token_id is not None:
@@ -502,14 +515,13 @@ def infer_generation(
                     out_ids = model.generate(
                         **inputs,
                         max_new_tokens=max_new_tokens,
-                        do_sample=False,          # 완전 결정적
-                        temperature=0.0,
-                        top_p=1.0,
-                        repetition_penalty=1.05,  # 가벼운 반복 억제
+                        do_sample=False,              # ★ 결정적
+                        repetition_penalty=1.05,
+                        use_cache=False,              # ★ Falcon 버그 회피
                         pad_token_id=tok.pad_token_id,
-                        eos_token_id=tok.eos_token_id,
-                        use_cache=True
+                        eos_token_id=tok.eos_token_id
                     )
+
 
                 out_text = tok.decode(out_ids[0], skip_special_tokens=True)
                 if dbg_f:
@@ -836,4 +848,5 @@ def main():
 
 if __name__=="__main__":
     main()
+
 
