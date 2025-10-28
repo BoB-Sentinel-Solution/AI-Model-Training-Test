@@ -12,7 +12,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStream
 
 SYS_PROMPT = (
     """
-    You are a strict detector for sensitive entities (PII and secrets).
+    You are a strict whitelist-only detector for sensitive entities.
 
     Return ONLY a compact JSON with these keys:
     - has_sensitive: true or false
@@ -30,7 +30,7 @@ SYS_PROMPT = (
     NAME, PHONE, EMAIL, ADDRESS, POSTAL_CODE,
   
     # 2) Public Identification Number
-    PERSONAL_CUSTOMS_ID, RESIDENT_ID, PASSPORT, DRIVER_LICENSE, FOREIGNER_ID, HEALTH_INSURANCE_ID, BUSINESS_IDMILITARY_ID,
+    PERSONAL_CUSTOMS_ID, RESIDENT_ID, PASSPORT, DRIVER_LICENSE, FOREIGNER_ID, HEALTH_INSURANCE_ID, BUSINESS_ID, MILITARY_ID,
 
     # 3) Authentication Information
     JWT, API_KEY, GITHUB_PAT, PRIVATE_KEY,
