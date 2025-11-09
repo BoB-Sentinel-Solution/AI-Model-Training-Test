@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Qwen 3B/7B — QLoRA/LoRA SFT for JSONL(messages) with CUSTOM MASKING (transformers.Trainer)
--------------------------------------------------------------------------------------------
+Qwen/Mistral 등 LLaMA계열 — QLoRA/LoRA SFT for JSONL(messages) with STABLE MASKING
+-----------------------------------------------------------------------------------
 Dataset format (JSONL only; one JSON object per line):
 
 {"id": 1, "messages": [
@@ -40,37 +40,6 @@ SEED = 42
 random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
 
 # ----------------------------------------------------------------------------------------
-# Expanded label set (for consistency across project; not directly used by training loop)
-# ----------------------------------------------------------------------------------------
-ALLOWED = {
-    # 개인 식별·연락
-    "NAME","PHONE","EMAIL","ADDRESS","BILLING_ADDRESS","SHIPPING_ADDRESS","POSTAL_CODE",
-    "DATE_OF_BIRTH","RESIDENT_ID","FOREIGNER_ID","PASSPORT","DRIVER_LICENSE","BUSINESS_ID",
-    "TAX_ID","SSN","HEALTH_INSURANCE_ID","EMERGENCY_CONTACT","EMERGENCY_PHONE",
-    # 계정·인증
-    "USERNAME","NICKNAME","ROLE","DEPARTMENT","GROUP","PERMISSION","PASSWORD","PASSWORD_HASH",
-    "SECURITY_QA","MFA_SECRET","BACKUP_CODE","SESSION_ID","COOKIE","JWT","ACCESS_TOKEN",
-    "REFRESH_TOKEN","OAUTH_CLIENT_ID","OAUTH_CLIENT_SECRET","API_KEY","SSH_PRIVATE_KEY",
-    "TLS_PRIVATE_KEY","PGP_PRIVATE_KEY","MNEMONIC","TEMP_CLOUD_CREDENTIAL","DEVICE_ID","IMEI",
-    "SERIAL_NUMBER","BROWSER_FINGERPRINT","SAML_ASSERTION","OIDC_ID_TOKEN","CONNECTION_STRING",
-    "INTERNAL_URL","LAST_LOGIN_IP","LAST_LOGIN_DEVICE","LAST_LOGIN_BROWSER","LAST_LOGIN_AT",
-    # 금융·결제
-    "BANK_NAME","BANK_BRANCH","BANK_ACCOUNT","ACCOUNT_HOLDER","IBAN","SWIFT_BIC","ROUTING_NUMBER",
-    "VIRTUAL_ACCOUNT","CURRENCY","BALANCE","CARD_NUMBER","CARD_EXPIRY","CARD_CVV","CARD_HOLDER",
-    "PAYMENT_PIN","SECURITIES_ACCOUNT","WALLET_ADDRESS","LOYALTY_ID","LOYALTY_BALANCE",
-    # 고객·거래·지원
-    "CUSTOMER_ID","MEMBERSHIP_ID","ORDER_ID","INVOICE_ID","TAX_INVOICE_ID","BILL_ID","REFUND_ID",
-    "EXCHANGE_ID","RMA_ID","TICKET_ID","TRACKING_ID","COUPON_CODE","VOUCHER_CODE",
-    "GATEWAY_CUSTOMER_ID","PAYMENT_PROFILE_ID","BUYER_NAME","RECIPIENT_NAME","CRM_RECORD_ID",
-    "CUSTOMER_NOTE_ID",
-    # 조직
-    "COMPANY_NAME","ORG_NAME","DEPARTMENT_NAME","EMPLOYEE_ID","JOB_TITLE","EMPLOYMENT_TYPE",
-    "HIRE_DATE","LEAVE_DATE","SALARY","BENEFIT_INFO","INSURANCE_INFO","OFFICE_EXT","OFFICE_LOCATION",
-    "WORKSITE","MANAGER_FLAG","ACCESS_CARD_ID","READER_ID","DUTY_ASSIGNMENT","TRAINING_COMPLETION_DATE",
-    "TRAINING_EXPIRY","EDUCATION_CERT"
-}
-
-# ----------------------------------------------------------------------------------------
 # Data loading: JSONL (strict). Each line -> {"id":..., "messages":[{sys},{usr},{asst}]}
 # ----------------------------------------------------------------------------------------
 def read_jsonl_messages(paths: List[str]) -> List[Dict[str, Any]]:
@@ -102,37 +71,26 @@ def read_jsonl_messages(paths: List[str]) -> List[Dict[str, Any]]:
 # ----------------------------------------------------------------------------------------
 def build_sample(tok, messages: List[Dict[str,str]], max_len: int = 1024):
     """
-    - Compose chat with tokenizer's chat template.
-    - Find assistant segment and label only that region. Others -> -100.
+    안정적 라벨링:
+    - full: system+user+assistant(content 포함)
+    - prefix: system+user + assistant 헤더만 (add_generation_prompt=True)
+    → 두 토큰 길이 차이로 assistant 라벨 범위를 계산.
     """
-    full_text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    # full
+    input_ids = tok.apply_chat_template(
+        messages, return_tensors="pt", add_generation_prompt=False
+    )[0]
+    attn = torch.ones_like(input_ids)
 
-    # Build assistant-only text (same formatting as in full chat)
-    asst_only_text = tok.apply_chat_template(
-        [{"role": "assistant", "content": messages[-1]["content"]}],
-        tokenize=False, add_generation_prompt=False
-    )
+    # prefix (assistant 헤더까지만)
+    prefix_ids = tok.apply_chat_template(
+        messages[:-1], return_tensors="pt", add_generation_prompt=True
+    )[0]
 
-    # Locate assistant substring inside the full chat string
-    start_char = full_text.rfind(asst_only_text)
-    if start_char == -1:
-        # fallback: assume assistant text is at the tail
-        start_char = max(0, len(full_text) - len(asst_only_text))
+    start_tok = prefix_ids.shape[0]
+    end_tok   = input_ids.shape[0]
 
-    enc_full = tok(full_text, return_tensors="pt", truncation=False)
-    input_ids = enc_full["input_ids"][0]
-    attn      = enc_full["attention_mask"][0]
-
-    # Token position for assistant segment via tokenizing prefix
-    prefix = full_text[:start_char]
-    enc_prefix = tok(prefix, return_tensors="pt", truncation=False)
-    start_tok = enc_prefix["input_ids"].shape[1]
-
-    enc_asst  = tok(asst_only_text, return_tensors="pt", truncation=False)
-    asst_len  = enc_asst["input_ids"].shape[1]
-    end_tok   = start_tok + asst_len
-
-    # Truncate head to fit max_len (keep the tail which usually contains assistant)
+    # Truncate head to fit max_len (keep tail; adjust offsets)
     if input_ids.shape[0] > max_len:
         cut = input_ids.shape[0] - max_len
         input_ids = input_ids[cut:]
@@ -146,6 +104,7 @@ def build_sample(tok, messages: List[Dict[str,str]], max_len: int = 1024):
     end_tok   = max(0, min(end_tok,   input_ids.shape[0]))
     if end_tok > start_tok:
         labels[start_tok:end_tok] = input_ids[start_tok:end_tok]
+    # else: 어시스턴트 라벨이 모두 잘렸다면 상위에서 필터링 권장
 
     return {"input_ids": input_ids, "attention_mask": attn, "labels": labels}
 
@@ -176,7 +135,7 @@ def pad_collate_fn(batch, pad_id: int, label_pad_id: int = -100):
     return {"input_ids": input_ids, "attention_mask": attn, "labels": labels}
 
 # ----------------------------------------------------------------------------------------
-# TrainingArguments (version-safe construction)
+# TrainingArguments
 # ----------------------------------------------------------------------------------------
 def make_training_args(args):
     try:
@@ -199,6 +158,11 @@ def make_training_args(args):
             warmup_ratio=0.03,
             remove_unused_columns=False,
             optim=("paged_adamw_8bit" if not args.no_qlora else "adamw_torch"),
+            report_to="none",
+            save_safetensors=True,
+            logging_first_step=True,
+            dataloader_num_workers=2,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
         )
     except TypeError:
         kwargs = dict(
@@ -212,6 +176,8 @@ def make_training_args(args):
             save_steps=200,
             save_total_limit=2,
             remove_unused_columns=False,
+            report_to="none",
+            save_safetensors=True,
         )
         if args.bf16 or args.fp16:
             kwargs["fp16"] = True
@@ -249,7 +215,7 @@ def main():
     if n == 0:
         raise RuntimeError("No samples found in the given JSONL file(s).")
 
-    # Simple split by id order (or shuffle then split)
+    # Split
     idx = list(range(n))
     random.shuffle(idx)
     k = max(1, int(n * args.val_ratio)) if n > 1 else 1
@@ -259,28 +225,58 @@ def main():
 
     print(f"[INFO] Loaded samples: {n} (train {len(train_rows)}, val {len(val_rows)})")
 
-    # Tokenizer & Model
-    tok = AutoTokenizer.from_pretrained(args.model, use_fast=True)
+    # Tokenizer (fast → slow 폴백 + chat_template 가드)
+    try:
+        tok = AutoTokenizer.from_pretrained(args.model, use_fast=True, trust_remote_code=True)
+    except Exception as e:
+        print(f"[WARN] fast tokenizer failed: {e}\n-> retry with use_fast=False")
+        tok = AutoTokenizer.from_pretrained(args.model, use_fast=False, trust_remote_code=True)
+
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    tok.padding_side = "right"
 
+    if not getattr(tok, "chat_template", None):
+        tok.chat_template = (
+            "{% for m in messages %}{{ m['role'] }}: {{ m['content'] }}\n{% endfor %}{{ eos_token }}"
+        )
+
+    # QLoRA config
     quant_cfg = None
     if not args.no_qlora:
         quant_cfg = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype=(torch.bfloat16 if args.bf16 else torch.float16),  # ← torch dtype(✅)
+            bnb_4bit_compute_dtype=(torch.bfloat16 if args.bf16 else torch.float16),
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True
         )
 
+    # Model
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         device_map="auto",
-        dtype="auto",
-        quantization_config=quant_cfg
+        torch_dtype=(torch.bfloat16 if args.bf16 else (torch.float16 if args.fp16 else None)),
+        quantization_config=quant_cfg,
+        trust_remote_code=True,
     )
 
-    # Apply LoRA
+    # (옵션) 속도 최적화
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    except Exception:
+        pass
+    # 캐시는 활성화 유지 (요청사항)
+
+    # QLoRA 준비
+    if quant_cfg is not None:
+        try:
+            from peft import prepare_model_for_kbit_training
+            model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+        except Exception as e:
+            print(f"[WARN] prepare_model_for_kbit_training skipped: {e}")
+
+    # LoRA adapter
     peft_cfg = LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
         bias="none", task_type="CAUSAL_LM",
@@ -314,14 +310,20 @@ def main():
         except Exception as e:
             print(f"[WARN] evaluate skipped: {e}")
 
-    # Save LoRA adapter explicitly
+    # Save LoRA adapter
     model.save_pretrained(args.out_dir)
 
     # Merge LoRA → single model
     print("\n[MERGE] Merging LoRA into base...")
-    base = AutoModelForCausalLM.from_pretrained(args.model, device_map="auto", dtype="auto")
+    # GPU 여유가 넉넉하지 않으면 device_map="cpu"로 병합 권장
+    base = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        device_map="auto",
+        torch_dtype=(torch.bfloat16 if args.bf16 else (torch.float16 if args.fp16 else None)),
+        trust_remote_code=True,
+    )
     merged = PeftModel.from_pretrained(base, args.out_dir).merge_and_unload()
-    merged.save_pretrained(args.merged_out)
+    merged.save_pretrained(args.merged_out, safe_serialization=True)
     tok.save_pretrained(args.merged_out)
 
     # Quick inference script
@@ -330,8 +332,8 @@ import torch, json
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 MODEL_DIR = r"{os.path.abspath(args.merged_out)}"
-tok = AutoTokenizer.from_pretrained(MODEL_DIR)
-model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, device_map="auto", dtype="auto")
+tok = AutoTokenizer.from_pretrained(MODEL_DIR, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, device_map="auto", torch_dtype=torch.bfloat16 if {args.bf16} else (torch.float16 if {args.fp16} else None), trust_remote_code=True)
 if tok.pad_token is None: tok.pad_token = tok.eos_token
 
 def chat_once(system_text: str, user_text: str, max_new_tokens=256):
