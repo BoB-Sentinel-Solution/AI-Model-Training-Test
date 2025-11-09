@@ -771,7 +771,7 @@ def save_radar_per_label(models_pl, labels, out_png, title="라벨별 F1 비교(
 
 def build_pdf_report(out_pdf, summary_list, per_label_union):
     from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, LongTable, TableStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, LongTable, Table, TableStyle
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet
 
