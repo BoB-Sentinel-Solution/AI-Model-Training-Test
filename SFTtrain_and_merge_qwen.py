@@ -272,7 +272,7 @@ def main():
     if quant_cfg is not None:
         try:
             from peft import prepare_model_for_kbit_training
-            model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+            model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
         except Exception as e:
             print(f"[WARN] prepare_model_for_kbit_training skipped: {e}")
 
