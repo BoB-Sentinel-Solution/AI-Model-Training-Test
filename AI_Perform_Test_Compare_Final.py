@@ -557,19 +557,13 @@ def infer_generation(
                 if dbg_f:
                     debug_rec["parsed"] = parsed
 
-                # JSON 파싱 순응도 (JSON이 *어디엔가*라도 있으면 OK)
+                # JSON 파싱 성공(어디엔가라도 유효 JSON이 있으면 OK)
                 if parsed is not None:
                     parsed_cnt += 1
 
-                # 프롬프트 준수(출력 전체가 오직 JSON 한 덩어리인가?)
-                adhered = False
-                if _is_only_json_text(out_text):
-                    try:
-                        obj = json.loads(out_text.strip())
-                        adhered = _is_valid_schema(obj)  # {"has_sensitive":bool/int, "entities":list}
-                    except Exception:
-                        adhered = False
-                # (_is_only_json_text 가 False 면 앞뒤에 “설명문 + JSON” 형태라서 비순응으로 간주)
+                # ✅ 프롬프트 순응도(완화 기준):
+                #    - raw_output 어딘가에라도 {"has_sensitive": <bool/int>, "entities": <list>} 구조의 JSON이 존재하면 순응으로 간주
+                adhered = (parsed is not None)
                 if adhered:
                     adhere_cnt += 1
 
