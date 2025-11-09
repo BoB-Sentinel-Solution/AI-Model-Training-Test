@@ -268,9 +268,9 @@ def main():
     if not args.no_qlora:
         quant_cfg = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype="bfloat16" if args.bf16 else "float16",
+            bnb_4bit_compute_dtype=(torch.bfloat16 if args.bf16 else torch.float16),  # ← torch dtype(✅)
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True
+            bnb_4bit_use_double_quant=True,
         )
 
     model = AutoModelForCausalLM.from_pretrained(
