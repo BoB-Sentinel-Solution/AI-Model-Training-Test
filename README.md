@@ -10,7 +10,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 pip install transformers trl peft accelerate datasets bitsandbytes safetensors huggingface_hub tokenizers numpy jsonschema
 
-pip install seqeval wandb einops
+pip install seqeval wandb einops sentencepiece
 ```
 
 ## How to run
