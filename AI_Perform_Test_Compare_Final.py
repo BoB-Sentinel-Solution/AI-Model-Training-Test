@@ -293,35 +293,176 @@ def print_improvement_summary(summary_list: List[dict]):
 # =========================
 import json as _json
 
-def extract_first_json(text: str) -> Optional[dict]:
-    # 텍스트 전체에서 { ... } 블록 후보를 전부 추출
-    candidates = []
-    stack = []
-    start = -1
-    for i, ch in enumerate(text):
-        if ch == '{':
-            if not stack:
-                start = i
-            stack.append('{')  # ✅ 오타 수정
-        elif ch == '}':
-            if stack:
-                stack.pop()
-                if not stack and start != -1:
-                    candidates.append(text[start:i+1])
-                    start = -1
+# ---- 복사 시작: robust JSON extraction helpers ----
+import re, json
 
-    # 뒤에서부터(가장 최근) 유효 JSON인지 검사 + 키 확인
-    for raw in reversed(candidates):
+_SQ_STRING = re.compile(r""":\s*'([^'\\]*(?:\\.[^'\\]*)*)'""")   # : '...'
+_TRAILING_COMMA = re.compile(r",\s*([}\]])")                     # , }  또는 , ]
+_SMART_QUOTES = str.maketrans({'“':'"', '”':'"', '‘':"'", '’':"'"})
+
+def _fix_single_quoted_strings(s: str) -> str:
+    # value: '...'  →  value: "..."
+    def _repl(m):
+        inner = m.group(1)
+        # 역슬래시/따옴표 이스케이프
+        inner = inner.replace('\\', '\\\\').replace('"', '\\"')
+        return ': "' + inner + '"'
+    return _SQ_STRING.sub(_repl, s)
+
+def _remove_trailing_commas(s: str) -> str:
+    # 배열/객체의 마지막 원소 뒤 콤마 제거
+    return _TRAILING_COMMA.sub(r"\1", s)
+
+def _normalize_smart_quotes(s: str) -> str:
+    # 스마트 따옴표 → 일반 따옴표
+    return s.translate(_SMART_QUOTES)
+
+def try_parse_json_loose(txt: str):
+    """
+    1) json.loads 시도
+    2) 실패시: 스마트따옴표 정규화 → 단일따옴표-문자열 보정 → 트레일링 콤마 제거 → 재시도
+    3) (선택) json5 있으면 최후 재시도
+    """
+    t = txt.strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+
+    t = _normalize_smart_quotes(t)
+    t = _fix_single_quoted_strings(t)
+    t = _remove_trailing_commas(t)
+
+    try:
+        return json.loads(t)
+    except Exception:
+        # json5가 설치되어 있다면 최후 시도 (선택)
         try:
-            obj = _json.loads(raw)
+            import json5
+            return json5.loads(txt)
         except Exception:
+            return None
+
+CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+
+def sanitize_text(s: str) -> str:
+    return (
+        s.replace("\u2028", "\n")
+         .replace("\u2029", "\n")
+         .replace("\ufeff", "")
+         .strip()
+    )
+
+def strip_role_headers_shallow(s: str) -> str:
+    s = s.lstrip()
+    for prefix in ("system\n", "user\n", "assistant\n"):
+        if s.startswith(prefix):
+            s = s[len(prefix):].lstrip()
+    return s
+
+def find_codefence_json_blocks(s: str):
+    return [m.group(1).strip() for m in CODE_FENCE_RE.finditer(s)]
+
+def find_all_top_level_json_blocks(s: str):
+    blocks = []
+    first = s.find("{")
+    if first == -1:
+        return blocks
+    level = 0
+    in_str = False
+    esc = False
+    start_idx = None
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
             continue
-        if isinstance(obj, dict) and "entities" in obj and "has_sensitive" in obj:
-            ents = obj.get("entities")
-            hs = obj.get("has_sensitive")
-            if isinstance(ents, list) and isinstance(hs, (bool, int)):
-                return obj
+        else:
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                if level == 0:
+                    start_idx = i
+                level += 1
+            elif ch == "}":
+                if level > 0:
+                    level -= 1
+                    if level == 0 and start_idx is not None:
+                        blocks.append(s[start_idx:i+1].strip())
+                        start_idx = None
+    return blocks
+
+def find_last_top_level_json_backward(s: str):
+    end = s.rfind("}")
+    if end == -1:
+        return None
+    level = 0
+    in_str = False
+    esc = False
+    for i in range(end, -1, -1):
+        ch = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        else:
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "}":
+                level += 1
+            elif ch == "{":
+                level -= 1
+                if level == 0:
+                    return s[i:end+1].strip()
     return None
+
+def extract_best_json(s: str):
+    """
+    우선순위:
+      (1) 코드펜스 내부의 '마지막' JSON
+      (2) 평문 내 최상위 JSON 블록 중 '마지막'
+      (3) 마지막 '}' 기준 역방향 스캔 복구
+    + role 헤더/제어문자 정리
+    """
+    s = sanitize_text(strip_role_headers_shallow(s))
+    cf = find_codefence_json_blocks(s)
+    if cf:
+        cand = cf[-1]
+        if cand:
+            try:
+                return json.loads(cand)
+            except Exception:
+                val = try_parse_json_loose(cand)
+                if val is not None:
+                    return val
+    blocks = find_all_top_level_json_blocks(s)
+    if blocks:
+        try:
+            return json.loads(blocks[-1])
+        except Exception:
+            val = try_parse_json_loose(blocks[-1])
+            if val is not None:
+                return val
+    tail = find_last_top_level_json_backward(s)
+    if tail:
+        try:
+            return json.loads(tail)
+        except Exception:
+            val = try_parse_json_loose(tail)
+            if val is not None:
+                return val
+    return None
+# ---- 복사 끝 ----
 
 def render_chat_prompt(tokenizer, system_prompt: str, user_prompt: str) -> str:
     # 모델이 chat_template 제공하면 적용, 아니면 fallback
@@ -553,7 +694,7 @@ def infer_generation(
                 if dbg_f:
                     debug_rec["raw_output"] = out_text
 
-                parsed = extract_first_json(out_text)
+                parsed = extract_best_json(out_text)
                 if dbg_f:
                     debug_rec["parsed"] = parsed
 
