@@ -151,7 +151,7 @@ def make_training_args(args):
             eval_steps=200,
             save_steps=200,
             save_total_limit=2,
-            gradient_checkpointing=True,
+            gradient_checkpointing=False,
             bf16=args.bf16,
             fp16=(args.fp16 and not args.bf16),
             lr_scheduler_type="cosine",
