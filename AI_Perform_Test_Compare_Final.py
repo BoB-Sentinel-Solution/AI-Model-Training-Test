@@ -657,39 +657,64 @@ def save_bar_f1(summary_list, out_png):
     plt.tight_layout(); plt.savefig(out_png,dpi=150); plt.close()
 
 def save_model_select(summary_list, out_png):
+    """모델 선정 지표: 프롬프트 순응도/JSON 파싱률 막대 그래프(퍼센트만)"""
+    setup_korean_font_for_matplotlib()
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    models = [s["model"] for s in summary_list]
+    adh = [100.0 * s.get("model_select", {}).get("adherence_rate", 0.0) for s in summary_list]
+    parsed = [100.0 * s.get("model_select", {}).get("parsed_rate", 0.0) for s in summary_list]
+
+    x = np.arange(len(models))
+    w = 0.35
+
+    plt.figure(figsize=(10,5))
+    b1 = plt.bar(x - w/2, adh, width=w, label="프롬프트 순응(%)")
+    b2 = plt.bar(x + w/2, parsed, width=w, label="JSON 파싱(%)")
+
+    plt.xticks(x, models)
+    plt.ylim(0, 100)
+    plt.ylabel("비율(%)")
+    plt.title("모델 선정 지표")
+
+    for rects in (b1, b2):
+        for r in rects:
+            h = r.get_height()
+            plt.text(r.get_x() + r.get_width()/2, h + 1, f"{h:.1f}%", ha="center", va="bottom", fontsize=9)
+
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=150)
+    plt.close()
+
+def save_model_latency(summary_list, out_png):
+    """모델별 Latency(평균/p50/p95)를 한 축의 선 그래프로 표시"""
+    setup_korean_font_for_matplotlib()
     import matplotlib.pyplot as plt
 
     models = [s["model"] for s in summary_list]
-    adh_pct = [100.0 * s.get("model_select",{}).get("adherence_rate", 0.0) for s in summary_list]
-    par_pct = [100.0 * s.get("model_select",{}).get("parsed_rate", 0.0) for s in summary_list]
-    p95_lat = [s.get("model_select",{}).get("lat_p95", 0.0) for s in summary_list]
+    means = [s.get("model_select", {}).get("lat_mean", 0.0) for s in summary_list]
+    p50s  = [s.get("model_select", {}).get("lat_p50", 0.0) for s in summary_list]
+    p95s  = [s.get("model_select", {}).get("lat_p95", 0.0) for s in summary_list]
 
-    x = list(range(len(models)))
-    width = 0.35
+    x = range(len(models))
+    plt.figure(figsize=(10,5))
+    plt.plot(x, means, marker="o", linewidth=2, label="평균 Latency(s)")
+    plt.plot(x, p50s,  marker="o", linewidth=2, label="p50 Latency(s)")
+    plt.plot(x, p95s,  marker="o", linewidth=2, label="p95 Latency(s)")
 
-    fig, ax1 = plt.subplots(figsize=(10,5))
-    b1 = ax1.bar([i - width/2 for i in x], adh_pct, width, label="프롬프트 준수(%)")
-    b2 = ax1.bar([i + width/2 for i in x], par_pct, width, label="JSON 파싱(%)")
-    ax1.set_ylim(0, 100)
-    ax1.set_ylabel("비율(%)")
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(models)
-    ax1.set_title("모델 선정 지표")
-    ax1.legend(loc="upper left")
+    plt.xticks(list(x), models)
+    plt.ylabel("Latency (s)")
+    plt.title("모델별 Latency (평균 / p50 / p95)")
+    plt.grid(True, alpha=0.2)
 
-    ax2 = ax1.twinx()
-    ax2.plot(x, p95_lat, marker="o", linewidth=2, label="p95 응답시간(s)")
-    ax2.set_ylabel("p95 Latency (s)")
-    ax2.legend(loc="upper right")
+    for i, v in enumerate(means): plt.text(i, v, f"{v:.2f}s", ha="center", va="bottom", fontsize=9)
+    for i, v in enumerate(p50s):  plt.text(i, v, f"{v:.2f}s", ha="center", va="bottom", fontsize=9)
+    for i, v in enumerate(p95s):  plt.text(i, v, f"{v:.2f}s", ha="center", va="bottom", fontsize=9)
 
-    for bi in (b1, b2):
-        for p in bi.patches:
-            ax1.text(p.get_x() + p.get_width()/2, p.get_height() + 1.5, f"{p.get_height():.1f}%", ha="center", va="bottom", fontsize=9)
-
-    for i, y in enumerate(p95_lat):
-        ax2.text(i, y, f"{y:.2f}s", ha="center", va="bottom", fontsize=9)
-
-    fig.tight_layout()
+    plt.legend()
+    plt.tight_layout()
     plt.savefig(out_png, dpi=150)
     plt.close()
 
@@ -777,6 +802,11 @@ def build_pdf_report(out_pdf, summary_list, per_label_union):
     if os.path.exists(model_select_png):
         story.append(Paragraph("<b>모델 선정 지표</b>", styles['Heading2']))
         story.append(Image(model_select_png, width=420, height=260))
+        story.append(Spacer(1, 12))
+    model_latency_png = os.path.join(os.path.dirname(out_pdf), "model_latency.png")
+    if os.path.exists(model_latency_png):
+        story.append(Paragraph("<b>Latency 지표 (평균/p50/p95)</b>", styles['Heading2']))
+        story.append(Image(model_latency_png, width=420, height=260))
         story.append(Spacer(1, 12))
     bar_png=os.path.join(os.path.dirname(out_pdf),"compare_F1_micro.png")
     if os.path.exists(bar_png):
@@ -937,6 +967,7 @@ def main():
 
     bar_png=os.path.join(args.outdir,"compare_F1_micro.png"); save_bar_f1(summaries, bar_png)
     model_select_png = os.path.join(args.outdir, "model_select.png"); save_model_select(summaries, model_select_png)
+    model_latency_png = os.path.join(args.outdir, "model_latency.png"); save_model_latency(summaries, model_latency_png)
     all_labels=sorted({x["label"] for s in summaries for x in s["per_label"]})
     radar_models=[]
     for key in ["3B_before","3B_after","7B_before","7B_after"]:
