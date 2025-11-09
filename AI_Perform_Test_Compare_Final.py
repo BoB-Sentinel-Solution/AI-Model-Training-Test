@@ -350,6 +350,43 @@ def find_all_spans(text: str, sub: str) -> List[Tuple[int,int]]:
         start=i+len(sub)
     return spans
 
+import re
+import json
+
+def _is_only_json_text(raw: str) -> bool:
+    """
+    출력 전체가 JSON 한 덩어리뿐인지 판정.
+    - 앞뒤에 공백/개행만 허용
+    - 중간에 JSON 하나만 존재해야 함
+    """
+    if not isinstance(raw, str):
+        return False
+    s = raw.strip()
+    # 가장 흔한 패턴: 통째로 { ... } 만 있는 경우
+    if s.startswith("{") and s.endswith("}"):
+        return True
+    # 그렇지 않으면 첫 JSON 블록을 찾고, 앞/뒤가 공백뿐인지 확인
+    m = re.search(r"\{.*\}", raw, flags=re.S)
+    if not m:
+        return False
+    return raw[:m.start()].strip() == "" and raw[m.end():].strip() == ""
+
+def _is_valid_schema(obj) -> bool:
+    """
+    시스템 프롬프트가 요구한 JSON 스키마를 만족하는지 판정.
+    { "has_sensitive": bool, "entities": list } 이면 OK
+    """
+    if not isinstance(obj, dict):
+        return False
+    if "has_sensitive" not in obj or "entities" not in obj:
+        return False
+    if not isinstance(obj["entities"], list):
+        return False
+    # has_sensitive 가 bool이 아닌 모델이 있어 int 허용(0/1) -> bool로 캐스팅 가능
+    if not isinstance(obj["has_sensitive"], (bool, int)):
+        return False
+    return True
+
 def infer_token_classification(
     prompts_path: str, model_id: str, out_path: str,
     aggregation: str = "simple",
@@ -520,19 +557,19 @@ def infer_generation(
                 if dbg_f:
                     debug_rec["parsed"] = parsed
 
-                # JSON 파싱 순응도
+                # JSON 파싱 순응도 (JSON이 *어디엔가*라도 있으면 OK)
                 if parsed is not None:
                     parsed_cnt += 1
 
-                # 프롬프트 준수(출력이 온전한 단일 JSON인지)
+                # 프롬프트 준수(출력 전체가 오직 JSON 한 덩어리인가?)
                 adhered = False
-                raw_stripped = out_text.strip()
-                try:
-                    only_json = json.loads(raw_stripped)
-                    if isinstance(only_json, dict) and set(only_json.keys()) >= {"has_sensitive","entities"}:
-                        adhered = True
-                except Exception:
-                    adhered = False
+                if _is_only_json_text(out_text):
+                    try:
+                        obj = json.loads(out_text.strip())
+                        adhered = _is_valid_schema(obj)  # {"has_sensitive":bool/int, "entities":list}
+                    except Exception:
+                        adhered = False
+                # (_is_only_json_text 가 False 면 앞뒤에 “설명문 + JSON” 형태라서 비순응으로 간주)
                 if adhered:
                     adhere_cnt += 1
 
@@ -733,18 +770,19 @@ def save_radar_per_label(models_pl, labels, out_png, title="라벨별 F1 비교(
     plt.tight_layout(); plt.savefig(out_png,dpi=150,bbox_inches="tight"); plt.close()
 
 def build_pdf_report(out_pdf, summary_list, per_label_union):
-    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, LongTable, TableStyle
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+
 
     # 🔤 ReportLab 한글 폰트 등록 (NanumGothic)
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     nanum_path = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
 
-    doc=SimpleDocTemplate(out_pdf,pagesize=A4)
-    styles=getSampleStyleSheet()
+    doc = SimpleDocTemplate(out_pdf, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18)
+    styles = getSampleStyleSheet()
 
     try:
         if os.path.exists(nanum_path):
@@ -761,12 +799,29 @@ def build_pdf_report(out_pdf, summary_list, per_label_union):
 
     story=[]
     story.append(Paragraph("<b>중요정보 탐지 모델 성능 비교 리포트</b>", styles['Title'])); story.append(Spacer(1, 12))
+    # --- 새 코드: LongTable + 긴 모델명 줄바꿈 허용 ---
+
+    from reportlab.platypus import Paragraph, LongTable, TableStyle
+    from reportlab.lib.styles import ParagraphStyle
+
+    story.append(Paragraph("<b>요약 지표</b>", styles['Heading2']))
+    story.append(Spacer(1, 6))
+
+    # (선택) 모델명 줄바꿈 허용: 구분자 뒤에 제로폭 공백을 넣어 자연스러운 개행 유도
+    model_style = ParagraphStyle('model', fontName=styles['Normal'].fontName, fontSize=8, leading=9)
+    def _soft_wrap_model(name: str) -> str:
+        for sep in ['/', '-', '_', '.']:
+            name = name.replace(sep, sep + '\u200b')
+        return name
+
     data = [["모델","P_micro","R_micro","F1_micro","F1_macro","Latency(s)","Throughput",
-         "Adh(%)","Parsed(%)","p50(s)","p95(s)"]]
+            "Adh(%)","Parsed(%)","p50(s)","p95(s)"]]
+
     for s in summary_list:
         ms = s.get("model_select", {})
+        model_cell = Paragraph(_soft_wrap_model(s["model"]), model_style)  # ← 줄바꿈 허용
         data.append([
-            s["model"],
+            model_cell,
             f"{s['precision_micro']:.3f}",
             f"{s['recall_micro']:.3f}",
             f"{s['f1_micro']:.3f}",
@@ -779,11 +834,32 @@ def build_pdf_report(out_pdf, summary_list, per_label_union):
             f"{ms.get('lat_p95',0.0):.3f}",
         ])
 
-    tbl=Table(data,hAlign="LEFT"); tbl.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#eeeeee")),("GRID",(0,0),(-1,-1),0.5,colors.grey),
-        ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("ALIGN",(1,1),(-1,-1),"CENTER"),
+    # 표가 길어져도 페이지 넘어가며 끊김 없이 이어지도록 LongTable 사용
+    col_widths = [110, 55, 55, 60, 60, 70, 70, 55, 65, 55, 55]  # 필요시 첫 열(모델) 폭만 조정
+    summary_tbl = LongTable(
+        data,
+        colWidths=col_widths,
+        repeatRows=1,     # 헤더 행 반복
+        splitByRow=True   # 행 단위로 자동 분할
+    )
+
+    summary_tbl.setStyle(TableStyle([
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,-1), 8),
+        ('ALIGN', (1,1), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#F0F2F6')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.HexColor('#222222')),
+        ('GRID', (0,0), (-1,-1), 0.4, colors.HexColor('#AAB2BD')),
+        ('LEFTPADDING', (0,0), (-1,-1), 4),
+        ('RIGHTPADDING', (0,0), (-1,-1), 4),
+        ('TOPPADDING', (0,0), (-1,-1), 2),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
     ]))
-    story.append(Paragraph("<b>요약 지표</b>", styles['Heading2'])); story.append(tbl); story.append(Spacer(1,12))
+    story.append(summary_tbl)
+    story.append(Spacer(1, 12))
+    # --- 새 코드 끝 ---
+
     pairs=[("3B_before","3B_after"),("7B_before","7B_after")]
     story.append(Paragraph("<b>튜닝 전/후 향상률 (%)</b>", styles['Heading2']))
     data3=[["모델쌍","ΔP_micro","ΔR_micro","ΔF1_micro","ΔF1_macro"]]
