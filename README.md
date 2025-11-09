@@ -16,24 +16,12 @@ pip install seqeval wandb einops
 ## How to run
 ```
 # QLoRA(4bit)
-python train_and_merge_qwen.py \
-  --model Qwen/Qwen2.5-7B-Instruct \
-  --data Learning_Test_Dataset_10.jsonl \
-  --out_dir runs/qwen7b_sft \
-  --merged_out runs/qwen7b_sft_merged \
-  --epochs 3 --bf16 \
-  --batch 1 --grad_accum 16 --max_len 1024
+python SFTtrain_and_merge_qwen.py --model Qwen/Qwen2.5-7B-Instruct --data id1-id2000.jsonl --out_dir runs/qwen7b_sft --merged_out runs/qwen7b_sft_merged --epochs 3 --bf16 --batch 1 --grad_accum 32 --max_len 1024
 ```
 
 ```
 # LoRA
-python train_and_merge_qwen.py \
-  --model Qwen/Qwen2.5-3B-Instruct \
-  --data Learning_Test_Dataset_10.jsonl \
-  --out_dir runs/qwen3b_sft \
-  --merged_out runs/qwen3b_sft_merged \
-  --epochs 3 --bf16 --no_qlora \
-  --batch 4 --grad_accum 8 --max_len 1024
+python SFTtrain_and_merge_qwen.py --model Qwen/Qwen2.5-3B-Instruct --data id1-id2000.jsonl --out_dir runs/qwen3b_sft --merged_out runs/qwen3b_sft_merged --epochs 3 --bf16 --no_qlora --batch 1 --grad_accum 32 --max_len 1024
 ```
 
 <img width="1905" height="307" alt="image" src="https://github.com/user-attachments/assets/0acaf195-3610-4aec-a614-687f8ad15cf2" />
