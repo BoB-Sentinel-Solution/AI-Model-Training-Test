@@ -137,7 +137,7 @@
 {"id": "281", "text": "홍대리님, 솔라나 결제 주소 (PAYMENT_URI_QR)로 송금 완료했습니다. 운전면허 (DRIVER_LICENSE) 확인되었고, 모바일 결제 PIN 749283으로 추가 인증 진행됩니다. 서버 (IPV4) 점검 예정이니 참고하세요."}
 {"id": "282", "text": "송민아 책임님의 시드 문구 elegant jungle dragon future patrol lake pioneer gravity velvet cabin miracle salad를 안전하게 백업하셨는지 확인 부탁드립니다. 사무실 대구시 수성구 동대구로 123 위치로 이전 완료했으며, 우편번호 42190입니다. (EMAIL)으로 이전 안내문을 발송했습니다."}
 {"id": "409", "text": "외국인 등록증 (FOREIGNER_ID) 직원의 개인통관부호 (PERSONAL_CUSTOMS_ID)으로 장비 수입했습니다. 여권 (PASSPORT)으로 신원 확인, 계좌 신한 (BANK_ACCOUNT)로 환급금 입금됩니다. 대전시 중구 대종로 890, 34945 주소로 물품 배송 완료했으니 (EMAIL)으로 수령 확인 부탁드립니다. 연락처 (PHONE)입니다."}
-{"id": "410", "text": "강수현 과장님, 솔라나 지갑 (PAYMENT_URI_QR)로 입금 완료했습니다. 사업자번호 (BUSINESS_ID)로 법인 등록, PIN 7395로 결제 승인됩니다. IMEI (IMEI) 기기 승인되었으며, (EMAIL)으로 거래 내역을 전송했습니다."}
+{"id": "410", "text": "강수현 과장님, 솔라나 결제 (PAYMENT_URI_QR)로 입금 완료했습니다. 사업자번호 (BUSINESS_ID)로 법인 등록, PIN 7395로 결제 승인됩니다. IMEI (IMEI) 기기 승인되었으며, (EMAIL)으로 거래 내역을 전송했습니다."}
 {"id": "411", "text": "암호화폐 개인키 0xaabbccddeeff00112233445566778899aabbccddeeff00112233445566는 콜드 스토리지에 보관 중입니다. 주민번호 (RESIDENT_ID)로 본인 인증, 계좌 기업 (BANK_ACCOUNT)로 출금 처리됩니다. IPv6 주소 (IPV6)에서 접속 가능하며, (EMAIL)으로 복구 가이드를 전송했습니다."}
 {"id": "412", "text": "조민재 실장의 JWT 토큰 eyJhbGciOiJFUzUxMiJ9.eyJzdWIiOiJjb3Jwb3JhdGUifQ.Y29ycG9yYXRlc2lnbmF0dXJlZGF0YTEyMzQ1Njc4OTA가 생성되었습니다. 운전면허 (DRIVER_LICENSE)로 본인 확인, 모바일 PIN 483926으로 관리자 권한이 활성화됩니다. 서버 (IPV4)에 배포 완료했으며, (EMAIL)으로 로그인 가이드를 전송했습니다."}
 {"id": "435", "text": "서버 보안 인증서 갱신 작업 안내드립니다. 인프라팀 문재현 선임이 금주 내 HTTPS 인증서를 갱신할 예정입니다. 긴급 상황 발생 시 연락받으실 번호는 (PHONE)입니다. 새로운 TLS 인증서의 개인키는 -----BEGIN PRIVATE KEY-----MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC8n2p-----END PRIVATE KEY-----입니다. 이 키는 절대 외부에 노출되어서는 안 되며, 암호화된 저장소에만 보관해야 합니다. 인증서 파일은 대전시 유성구 대학로 99 IDC 센터의 보안 서버에 업로드 완료했습니다. 갱신 작업은 새벽 시간대에 진행되어 서비스 중단은 최소화될 예정입니다. 모든 도메인의 SSL 검증도 자동화 스크립트로 확인됩니다."}
@@ -198,5 +198,6 @@
 {"id": "498", "text": "주말 아침 시장에서 맛있는 간식을 사 먹었습니다. 따뜻한 음식을 먹으며 활기찬 시장 분위기를 즐겼습니다. 전통 시장만의 정겨운 느낌이 좋아 자주 방문하게 됩니다."}
 {"id": "499", "text": "책상 위를 깔끔하게 정리하고 업무 환경을 개선했습니다. 정돈된 공간에서 일하니 집중력이 높아지는 것을 느꼈습니다. 주변 환경이 업무 효율에 큰 영향을 준다는 것을 깨달았습니다."}
 {"id": "500", "text": "저녁에 가족들과 함께 식탁에 둘러앉아 대화를 나눴습니다. 하루 동안 있었던 일들을 공유하며 서로를 이해하는 시간을 가졌습니다. 함께하는 시간이 얼마나 소중한지 다시 한번 느꼈습니다."}
+
 
 
