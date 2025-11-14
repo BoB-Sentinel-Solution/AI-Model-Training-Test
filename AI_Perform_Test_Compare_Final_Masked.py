@@ -96,6 +96,17 @@ REGEX_HANDLED_LABELS = {
     "IPV4", "IPV6", "MAC_ADDRESS",
 }
 
+# ===== Regex로 이미 100% 처리하는 라벨(평가에서 TP 가산) =====
+REGEX_CREDIT_LABELS = {
+    "PHONE","EMAIL","PERSONAL_CUSTOMS_ID","RESIDENT_ID","PASSPORT","DRIVER_LICENSE",
+    "FOREIGNER_ID","BUSINESS_ID","MILITARY_ID","API_KEY","GITHUB_PAT","PRIVATE_KEY",
+    "CARD_NUMBER","IMEI","CARD_EXPIRY","BANK_ACCOUNT","HD_WALLET","PAYMENT_URI_QR",
+    "IPV4","IPV6","MAC_ADDRESS",
+}
+
+# 마스킹 토큰 후보 (() / [] 모두 허용)
+MASK_TOKEN_FORMS = ["({lab})"]
+
 # =========================
 # 2) 공통 유틸/평가
 # =========================
@@ -689,6 +700,25 @@ def infer_generation(
         "latencies": item_latencies
     }
 
+import re
+from collections import Counter
+
+def tally_regex_credits_from_prompts(prompts_path: str) -> Counter:
+    """
+    Masked 프롬프트의 본문(text)에서 (PHONE), (EMAIL) 같은 토큰을 세어
+    REGEX_CREDIT_LABELS 대상 라벨별 개수를 카운트한다.
+    예: "(PHONE) 번호", "[EMAIL]" 등도 허용.
+    """
+    token_pat = re.compile(r'[\(\[\{<]\s*([A-Z_]+)\s*[\)\]\}>]')
+    credits = Counter()
+    for obj in load_jsonl(prompts_path):
+        text = obj.get("text", "") or ""
+        for m in token_pat.finditer(text):
+            lab = m.group(1)
+            if lab in REGEX_CREDIT_LABELS:
+                credits[lab] += 1
+    return credits
+
 # =========================
 # 5) 시각화 & PDF
 # =========================
@@ -991,6 +1021,52 @@ def run_one_model(task, prompts_path, answers_path, model_name, model_id,
     metrics["model"] = model_name
     metrics["latency"] = latency_avg
     metrics["throughput"] = throughput
+
+        # ---- 정규식 TP 가산: Masked Prompt에서 (LABEL) 토큰 개수를 라벨별로 합산 ----
+    regex_credits = tally_regex_credits_from_prompts(prompts_path)
+
+    # 현재 per_label 리스트 -> dict로 변환(라벨별 TP/FP/FN 수정 용이)
+    pl_dict = {row["label"]: dict(tp=row["tp"], fp=row["fp"], fn=row["fn"]) 
+            for row in metrics["per_label"]}
+
+    # 정규식 라벨에 대해 TP += credit, FN -= credit (하한 0)
+    for lab, add_tp in regex_credits.items():
+        if lab not in pl_dict:
+            pl_dict[lab] = {"tp": 0, "fp": 0, "fn": 0}
+        pl_dict[lab]["tp"] += add_tp
+        pl_dict[lab]["fn"] = max(0, pl_dict[lab]["fn"] - add_tp)
+
+    # per_label 재계산 + Micro/Macro 재산출
+    def _safe_div(a, b): return (a / b) if b else 0.0
+
+    new_per_label = []
+    total_tp = total_fp = total_fn = 0
+    p_list = []; r_list = []; f1_list = []
+    for lab in sorted(pl_dict.keys()):
+        tp_l = pl_dict[lab]["tp"]; fp_l = pl_dict[lab]["fp"]; fn_l = pl_dict[lab]["fn"]
+        total_tp += tp_l; total_fp += fp_l; total_fn += fn_l
+        p_l = _safe_div(tp_l, tp_l + fp_l)
+        r_l = _safe_div(tp_l, tp_l + fn_l)
+        f1_l = _safe_div(2 * p_l * r_l, p_l + r_l) if (p_l + r_l) else 0.0
+        new_per_label.append({
+            "label": lab, "tp": tp_l, "fp": fp_l, "fn": fn_l,
+            "precision": p_l, "recall": r_l, "f1": f1_l
+        })
+        p_list.append(p_l); r_list.append(r_l); f1_list.append(f1_l)
+
+    metrics["tp"] = total_tp
+    metrics["fp"] = total_fp
+    metrics["fn"] = total_fn
+    metrics["precision_micro"] = _safe_div(total_tp, total_tp + total_fp)
+    metrics["recall_micro"]    = _safe_div(total_tp, total_tp + total_fn)
+    metrics["f1_micro"]        = _safe_div(2 * metrics["precision_micro"] * metrics["recall_micro"],
+                                        (metrics["precision_micro"] + metrics["recall_micro"])) if (metrics["precision_micro"] + metrics["recall_micro"]) else 0.0
+    metrics["precision_macro"] = sum(p_list)/len(p_list) if p_list else 0.0
+    metrics["recall_macro"]    = sum(r_list)/len(r_list) if r_list else 0.0
+    metrics["f1_macro"]        = sum(f1_list)/len(f1_list) if f1_list else 0.0
+    metrics["per_label"]       = new_per_label
+    # ---------------------------------------------------------------------------
+
 
     # 모델선정지표 합치기
     ms = model_sel_stats or {"n":0,"adhere":0,"parsed":0,"latencies":[]}
