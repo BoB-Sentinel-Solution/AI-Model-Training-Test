@@ -49,15 +49,15 @@
 {"id":"49","text":"온라인 쇼핑몰 결제: 카드 5105-1051-0510-5100 만료일 12/28 보안코드 357 입력 완료."}
 {"id":"50","text":"재무 정보 업데이트: 입금계좌 330-987-654321, 현금카드 PIN 9273, 페이앱 인증코드 581947 설정 완료."}
 {"id":"51","text":"블록체인 지갑 백업 완료 - 시드: galaxy thunder whisper castle rainbow butterfly diamond symphony adventure puzzle quantum energy, 개인키: 0x3d5f8a2b9c1e7d4a6f0b8c9e7a5d4c3b2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a, HD키: zprvAdG4iTXWBo8cK3Sk9MjMwqxZsQj4pE6Nh8zYjKpLm9sTuVx3으로 저장."}
-{"id":"52","text":"암호화폐 결제 정보 - 이더리움 주소: ethereum:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEcF?value=1000000000000000000&memo=payment-2025 / 네트워크: 172.16.5.10 / IPv6: fe80:abcd:1234::5678/64 / 장비 MAC: 11-22-33-44-55-66"}
-{"id":"53","text":"IT 자산 관리 - 네트워크 MAC 주소: 22-33-44-55-66-77, 분실 휴대폰 IMEI: 358240051111110, 담당자: 박서연, 연락처: 031-456-7890"}
+{"id":"52","text":"암호화폐 결제 정보 - 이더리움 주소: ethereum:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEcF?value=1000000000000000000&memo=payment-2025 / 네트워크: 172.16.5.10 / IPv6: fe80:abcd:1234::5678/64"}
+{"id":"53","text":"IT 자산 관리 - 네트워크 MAC 주소: 22-33-44-55-66-77, 분실 휴대폰 IMEI: 358240051111110, 담당자: 박서연"}
 {"id":"54","text":"고객 지원 티켓 *8472 - 문의자 전화: 010-2847-9361, 이메일: customer@gmail.com, 배송 주소: 대전시 유성구 대학로 99"}
-{"id":"55","text":"신규 입점 신청 - 우편번호: 34141, 통관코드: P876543210987, 대표자 주민번호: 880922-2567890, 여권: MA2345678"}
-{"id":"56","text":"인사 정보 시스템 - 면허: 33-44-556677-88, 외국인등록: 870604-8901234, 건강보험: 87654321098, 사업자: 321-54-98760"}
-{"id":"57","text":"보안 시스템 로그 - 군번: 20-34567890 / JWT: eyJhbGciOiJFUzI1NiJ9.eyJyb2xlIjoiYWRtaW4ifQ.abc123xyz / API: sk-live-SecretKey-555 / PAT: ghs_MnO456pQrStUvWxYz123AbCdEf"}
+{"id":"55","text":"신규 입점 신청 - 우편번호: 34141, 통관코드: P876543210987, 대표자 주민번호: 880922-2567890"}
+{"id":"56","text":"인사 정보 시스템 - 면허: 33-44-556677-88, 외국인등록: 870604-8901234, 건강보험: 87654321098"}
+{"id":"57","text":"보안 시스템 로그 - 군번: 20-34567890 / JWT: eyJhbGciOiJFUzI1NiJ9.eyJyb2xlIjoiYWRtaW4ifQ.abc123xyz / API: sk-live-SecretKey-555"}
 {"id":"58","text":"개발자 인증 정보 - GitHub 토큰: ghu_WrongCommitterToken67890, 서버 키: -----BEGIN PRIVATE KEY-----\nMIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6AgEAAoGBAL8z\n-----END PRIVATE KEY-----, 사업자번호: 654-32-10987"}
-{"id":"59","text":"결제 정보 암호화 저장 - 카드: 4916-3385-0608-2832, 만료: 03/26, CVV: 719, 계좌: 440-123-789456"}
-{"id":"60","text":"금융 거래 보안 설정 - 입금계좌: 550-246-135790, PIN: 7249, 모바일결제: 394827 등록 완료."}
+{"id":"59","text":"결제 정보 암호화 저장 - 카드: 4916-3385-0608-2832, 만료: 03/26, CVV: 719"}
+{"id":"60","text":"금융 거래 보안 설정 - 입금계좌: 550-246-135790, PIN: 7249 등록 완료."}
 {"id":"61","text":"크립토 자산 이전 준비 - 복구문구: sunset ocean mountain forest galaxy crystal energy harmony melody thunder wisdom phoenix / 프라이빗키: 0x1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b / 확장키: xprv9s21ZrQH143K4VyXKTg3qnTbJu8F5n7eDxNmXq9nTyZaFdUpJQz9KhLmNpQrStUv"}
 {"id":"62","text":"인프라 보안 점검 완료 - 결제 QR: solana:7xTestSolanaWalletAddress123xyz?amount=10.5&reference=inv-2025-12, 서버IP: 192.168.100.50, IPv6: 2001:db8:cafe::1234:5678:90ab"}
 {"id":"63","text":"대통령실 임시 홈페이지 개설 안내 존경하는 국민 여러분, 안녕하십니까. 이재명 정부는 국민과의 직접 소통을 최우선 과제로 삼고 있습니다. 이에 따라, 대통령의 일정과 메시지, 국정 방향과 정책, 영상·사진 자료 등을 신속하고 투명하게 제공하기 위한 임시 홈페이지를 개설하였습니다. 이 임시 홈페이지는 정식 홈페이지가 구축되기 전까지 국민 여러분과의 실시간 소통을 위한 가교 역할을 수행할 예정입니다. 향후 새 정부의 국정 철학인 '국민주권의 실현'을 반영한 정식 홈페이지를 통해 더욱 확장된 디지털 민주주의 플랫폼으로 발전시켜 나가겠습니다. 국민 여러분의 많은 방문과 관심, 그리고 적극적인 참여를 부탁드립니다. 감사합니다. 2025.06.19. 대한민국 대통령실"}
