@@ -316,7 +316,7 @@
 {"id": 316, "text": "보안 시스템 로그 - 군번: 20-34567890 / JWT: eyJhbGciOiJFUzI1NiJ9.eyJyb2xlIjoiYWRtaW4ifQ.abc123xyz / API: sk-live-SecretKey-555"}
 {"id": 317, "text": "개발자 인증 정보 - GitHub 토큰: ghu_WrongCommitterToken67890, 서버 키: -----BEGIN PRIVATE KEY-----\nMIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6AgEAAoGBAL8z\n-----END PRIVATE KEY-----, 사업자번호: 654-32-10987"}
 {"id": 318, "text": "결제 정보 암호화 저장 - 카드: 4916-3385-0608-2832, 만료: 03/26, CVV: 719"}
-{"id": 319, "text": "금융 거래 보안 설정 - 입금계좌: 550-246-135790, PIN: 7249 등록 완료."}
+{"id": 319, "text":"금융 거래 보안 설정 - 입금계좌: 550-246-135790, PIN: 7249, 모바일결제: 394827 등록 완료."}
 {"id": 320, "text": "크립토 자산 이전 준비 - 복구문구: sunset ocean mountain forest galaxy crystal energy harmony melody thunder wisdom phoenix / 프라이빗키: 0x1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b / 확장키: xprv9s21ZrQH143K4VyXKTg3qnTbJu8F5n7eDxNmXq9nTyZaFdUpJQz9KhLmNpQrStUv"}
 {"id": 321, "text": "인프라 보안 점검 완료 - 결제 QR: solana:7xTestSolanaWalletAddress123xyz?amount=10.5&reference=inv-2025-12, 서버IP: 192.168.100.50, IPv6: 2001:db8:cafe::1234:5678:90ab"}
 {"id": 322, "text": "대통령실 임시 홈페이지 개설 안내 존경하는 국민 여러분, 안녕하십니까. 이재명 정부는 국민과의 직접 소통을 최우선 과제로 삼고 있습니다. 이에 따라, 대통령의 일정과 메시지, 국정 방향과 정책, 영상·사진 자료 등을 신속하고 투명하게 제공하기 위한 임시 홈페이지를 개설하였습니다. 이 임시 홈페이지는 정식 홈페이지가 구축되기 전까지 국민 여러분과의 실시간 소통을 위한 가교 역할을 수행할 예정입니다. 향후 새 정부의 국정 철학인 '국민주권의 실현'을 반영한 정식 홈페이지를 통해 더욱 확장된 디지털 민주주의 플랫폼으로 발전시켜 나가겠습니다. 국민 여러분의 많은 방문과 관심, 그리고 적극적인 참여를 부탁드립니다. 감사합니다. 2025.06.19. 대한민국 대통령실"}
